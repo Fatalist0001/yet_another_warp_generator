@@ -109,6 +109,15 @@ type Options struct {
 	PingTimeout time.Duration
 	// SkipPing — не мерить задержку (только trace).
 	SkipPing bool
+	// StrictRegion — отвергать endpoint'ы с регионом RU.
+	//
+	// По умолчанию false: из России WARP всегда отдаёт внешним сервисам loc=RU
+	// (Cloudflare назначает выходной IP по геолокации клиента), поэтому такие
+	// endpoint'ы учитываются, а регион остаётся видимым в выводе как предупреждение.
+	//
+	// Отвергаются всегда (независимо от этого флага) colo DME/LED/KJA — там
+	// блокировки по SNI+IP, это вопрос доступности, а не региона.
+	StrictRegion bool
 	// OnProbe вызывается после каждого проверенного кандидата.
 	OnProbe func(done, total int)
 }
@@ -152,7 +161,7 @@ const (
 	StatusNoHandshake
 	// StatusNoTrace — хендшейк есть, но данные через туннель не идут.
 	StatusNoTrace
-	// StatusBadRegion — выходной регион RU.
+	// StatusBadRegion — выходной регион RU (отвергается только в режиме StrictRegion).
 	StatusBadRegion
 	// StatusExcludedColo — российский colo (DME/LED/KJA).
 	StatusExcludedColo
@@ -202,15 +211,28 @@ func Qualifies(r Result) bool {
 	return r.Status == StatusOK
 }
 
-// ClassifyRegion решает статус по loc/colo.
+// ClassifyRegion решает статус по loc/colo без учёта политики.
+// Исключённый colo проверяется первым: российские узлы отвергаются из-за блокировок
+// по SNI+IP, и это важнее того, что регион может оказаться RU.
 func ClassifyRegion(loc, colo string) Status {
-	if strings.EqualFold(strings.TrimSpace(loc), "RU") {
-		return StatusBadRegion
-	}
 	if ExcludedColos[strings.ToUpper(strings.TrimSpace(colo))] {
 		return StatusExcludedColo
 	}
+	if strings.EqualFold(strings.TrimSpace(loc), "RU") {
+		return StatusBadRegion
+	}
 	return StatusOK
+}
+
+// regionStatus применяет политику региона: в обычном режиме RU не отвергается
+// (из России WARP иначе не даёт ни одного подходящего endpoint), в strict — да.
+// Исключённые colo отвергаются всегда.
+func regionStatus(loc, colo string, strict bool) Status {
+	s := ClassifyRegion(loc, colo)
+	if s == StatusBadRegion && !strict {
+		return StatusOK
+	}
+	return s
 }
 
 // Rank сортирует подходящие endpoint по возрастанию задержки.
@@ -335,7 +357,7 @@ func probe(ctx context.Context, tn *tunnel.Tunnel, c Candidate, opts Options) Re
 		return r
 	}
 	r.Loc, r.Colo = tr.Loc, tr.Colo
-	r.Status = ClassifyRegion(tr.Loc, tr.Colo)
+	r.Status = regionStatus(tr.Loc, tr.Colo, opts.StrictRegion)
 	if r.Status != StatusOK {
 		return r
 	}

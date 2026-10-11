@@ -110,6 +110,7 @@ func runScan(args []string) error {
 	target := fs.Int("target", 3, "остановиться, когда найдено столько подходящих endpoint")
 	handshake := fs.Duration("handshake", scanner.DefaultHandshakeTimeout, "таймаут хендшейка на кандидата")
 	skipPing := fs.Bool("skip-ping", false, "не мерить задержку (только trace)")
+	strictRegion := fs.Bool("strict-region", false, "отвергать endpoint'ы с регионом RU (по умолчанию учитываются)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -140,6 +141,7 @@ func runScan(args []string) error {
 		TargetGood:       *target,
 		HandshakeTimeout: *handshake,
 		SkipPing:         *skipPing,
+		StrictRegion:     *strictRegion,
 		OnProbe:          progressReporter(*cf.debug, len(cands)),
 	}
 	factory := newTunnelFactory(acct, cfg, *cf.iface)
@@ -161,6 +163,9 @@ func runScan(args []string) error {
 	fmt.Printf("Подходящих endpoint: %d\n\n", len(ranked))
 	if len(ranked) > 0 {
 		fmt.Print(scanner.FormatTable(ranked))
+		if n := countRU(ranked); n > 0 {
+			fmt.Printf("\nПримечание: %d из %d endpoint'ов отдают внешним сервисам регион RU — WARP из России всегда так делает.\n", n, len(ranked))
+		}
 		return nil
 	}
 	if len(results) == 0 {
@@ -176,6 +181,17 @@ func runScan(args []string) error {
 	}
 	fmt.Println("Подходящих endpoint не найдено. Попробуйте --max больше или другой --ports.")
 	return nil
+}
+
+// countRU — сколько подходящих endpoint'ов определяются как регион RU.
+func countRU(results []scanner.Result) int {
+	n := 0
+	for _, r := range results {
+		if strings.EqualFold(strings.TrimSpace(r.Loc), "RU") {
+			n++
+		}
+	}
+	return n
 }
 
 // summarizeStatuses — раскладка результатов скана по статусам.

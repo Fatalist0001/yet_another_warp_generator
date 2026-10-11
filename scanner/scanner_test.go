@@ -63,10 +63,13 @@ func TestClassifyRegion(t *testing.T) {
 		want      Status
 	}{
 		{"FI", "HEL", StatusOK},
-		{"RU", "DME", StatusBadRegion},
-		{"ru", "led", StatusBadRegion},
+		{"RU", "FRA", StatusBadRegion},
+		{"ru", "arn", StatusBadRegion},
 		{"DE", "DME", StatusExcludedColo},
 		{"US", "kja", StatusExcludedColo},
+		// Исключённый colo важнее региона.
+		{"RU", "DME", StatusExcludedColo},
+		{"RU", "led", StatusExcludedColo},
 		{"NL", "AMS", StatusOK},
 	}
 	for _, c := range cases {
