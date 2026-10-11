@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -154,13 +155,66 @@ func runScan(args []string) error {
 	}
 
 	fmt.Printf("Проверено кандидатов: %d\n", len(results))
+	if len(results) > 0 {
+		fmt.Printf("Итоги: %s\n", summarizeStatuses(results))
+	}
 	fmt.Printf("Подходящих endpoint: %d\n\n", len(ranked))
 	if len(ranked) > 0 {
 		fmt.Print(scanner.FormatTable(ranked))
-	} else {
-		fmt.Println("Подходящих endpoint не найдено. Попробуйте --max больше или другой --ports.")
+		return nil
 	}
+	if len(results) == 0 {
+		fmt.Println("Ни один кандидат не прошёл даже хендшейк. Попробуйте другой --ports или проверьте, выключен ли посторонний VPN.")
+		return nil
+	}
+	if allBadRegion(results) {
+		fmt.Println("Рабочие endpoint'ы есть, но все они на выходе определяются как RU:")
+		fmt.Println("Cloudflare назначает выходной IP по региону клиента, поэтому через WARP")
+		fmt.Println("из России внешние сервисы всё равно видят российский регион (loc=RU).")
+		fmt.Println("Это ограничение WARP, а не блокировка: сами endpoint и DNS работают.")
+		return nil
+	}
+	fmt.Println("Подходящих endpoint не найдено. Попробуйте --max больше или другой --ports.")
 	return nil
+}
+
+// summarizeStatuses — раскладка результатов скана по статусам.
+func summarizeStatuses(results []scanner.Result) string {
+	counts := map[scanner.Status]int{}
+	for _, r := range results {
+		counts[r.Status]++
+	}
+	type kv struct {
+		s scanner.Status
+		n int
+	}
+	xs := make([]kv, 0, len(counts))
+	for s, n := range counts {
+		xs = append(xs, kv{s, n})
+	}
+	sort.Slice(xs, func(i, j int) bool { return xs[i].n > xs[j].n })
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = fmt.Sprintf("%s — %d", x.s, x.n)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// allBadRegion — есть endpoint'ы, дошедшие до trace, и все они отвергнуты только
+// из-за региона RU. Тогда пустой вывод scan объясняется не блокировкой, а тем,
+// что WARP из России всегда показывает RU.
+func allBadRegion(results []scanner.Result) bool {
+	reached := 0
+	for _, r := range results {
+		if r.Loc == "" {
+			continue // кандидат не дошёл до trace — к региону отношения не имеет
+		}
+		reached++
+		if r.Status != scanner.StatusBadRegion {
+			return false
+		}
+	}
+	return reached > 0
 }
 
 // --- dns-check ---
@@ -193,12 +247,15 @@ func runDNSCheck(args []string) error {
 
 	ep := strings.TrimSpace(*endpoint)
 	if ep == "" {
-		found, err := findEndpoint(ctx, tn)
+		found, loc, err := findEndpoint(ctx, tn)
 		if err != nil {
 			return err
 		}
 		ep = found
-		fmt.Printf("Выбран endpoint: %s\n", ep)
+		fmt.Printf("Выбран endpoint: %s (loc=%s)\n", ep, loc)
+		if strings.EqualFold(loc, "RU") {
+			fmt.Println("Примечание: выходной регион RU — так WARP видит Cloudflare из России.")
+		}
 	}
 	if !tn.Handshake(ctx, ep, scanner.DefaultHandshakeTimeout) {
 		return fmt.Errorf("не удалось установить хендшейк с %s", ep)
@@ -348,23 +405,50 @@ func tunnelOptions(acct registration.Account, cfg config.Config, iface string) t
 	}
 }
 
-// findEndpoint делает быстрый скан и возвращает лучший endpoint.
-func findEndpoint(ctx context.Context, tn *tunnel.Tunnel) (string, error) {
+const (
+	// findEndpointMaxProbes — жёсткий предел перебора.
+	findEndpointMaxProbes = 200
+	// findEndpointGiveUp — после стольких проверок довольствуемся первым рабочим
+	// endpoint, чтобы не искать не-RU регион бесконечно (из России его не бывает).
+	findEndpointGiveUp = 40
+)
+
+// findEndpoint ищет рабочий endpoint для проверок (dns-check без --endpoint).
+// Предпочитает endpoint с регионом не RU; если такого нет за отведённое число
+// попыток — возвращает первый работающий (туннель проходит данные), чтобы
+// проверка DNS всё равно состоялась.
+func findEndpoint(ctx context.Context, tn *tunnel.Tunnel) (endpoint, loc string, err error) {
 	cands := scanner.Expand(scanner.DefaultPrefixes(), scanner.DefaultPorts)
+	firstWorking := ""
+	firstLoc := ""
+	probed := 0
 	for _, c := range cands {
-		if ctx.Err() != nil {
+		if probed >= findEndpointMaxProbes || ctx.Err() != nil {
 			break
 		}
+		if firstWorking != "" && probed >= findEndpointGiveUp {
+			break
+		}
+		probed++
 		ep := c.Endpoint()
-		if tn.Handshake(ctx, ep, scanner.DefaultHandshakeTimeout) {
-			if tr, err := tn.FetchTrace(ctx, scanner.DefaultTraceTimeout); err == nil {
-				if scanner.ClassifyRegion(tr.Loc, tr.Colo) == scanner.StatusOK {
-					return ep, nil
-				}
-			}
+		if !tn.Handshake(ctx, ep, scanner.DefaultHandshakeTimeout) {
+			continue
+		}
+		tr, terr := tn.FetchTrace(ctx, scanner.DefaultTraceTimeout)
+		if terr != nil {
+			continue
+		}
+		if scanner.ClassifyRegion(tr.Loc, tr.Colo) == scanner.StatusOK {
+			return ep, tr.Loc, nil
+		}
+		if firstWorking == "" {
+			firstWorking, firstLoc = ep, tr.Loc
 		}
 	}
-	return "", errors.New("не нашли подходящий endpoint; запустите scan")
+	if firstWorking != "" {
+		return firstWorking, firstLoc, nil
+	}
+	return "", "", fmt.Errorf("не нашли рабочий endpoint за %d проверок; запустите scan и укажите --endpoint", probed)
 }
 
 func buildDNSTargets(names []string) []dnscheck.Target {
