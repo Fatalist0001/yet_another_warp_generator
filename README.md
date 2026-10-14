@@ -1,9 +1,6 @@
 # warpgen — локальный генератор WARP-конфигов для Amnezia
 
-> **Контекст** — подробности в `docs/инструкция-для-opencode.md`.
 > **Ядро** — на базе `github.com/vernette/warpscout` (MIT).
-> **Отчёты о тестах схемы WARP → Psiphon** — в `docs/` (`psiphon-test-report.md`,
-> `psiphon-test-report-2.md`, `psiphon-stability-report.md`).
 
 Локальный CLI-инструмент на Go, который регистрирует WARP-аккаунт, сканирует
 рабочие endpoint Cloudflare, проверяет DNS через туннель и выдаёт готовый `.conf`
@@ -68,10 +65,9 @@ colo DME/LED/KJA; они сортируются по возрастанию за
 
 Один WARP из России не меняет выходной регион (`loc=RU`), но если поверх внешнего
 AWG-туннеля запустить **warp-plus** в режиме `--cfon`, он поднимает свой WARP, а
-поверх него — Psiphon, и страну меняет именно Psiphon (замеры — в
-`docs/psiphon-test-report-2.md`). Команда `chain` автоматизирует это: сама проверяет
-внешний туннель, готовит identity для warp-plus, перебирает страны и держит SOCKS5,
-пока процесс жив.
+поверх него — Psiphon, и страну меняет именно Psiphon. Команда `chain` автоматизирует
+это: проверяет внешний туннель, готовит identity для warp-plus, перебирает страны и
+держит SOCKS5, пока процесс жив.
 
 ```bash
 # 1. Внешний туннель: сгенерировать .conf и подключить его в AmneziaVPN
@@ -180,7 +176,7 @@ WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run Inte
 
 ## WARP-safe инварианты конфига
 
-Зафиксированы в `config` и проверяются тестами (эталоны — в `refconf/`):
+Зафиксированы в `config` и проверяются тестами:
 
 - `S1 S2 S3 S4 = 0`, `H1 H2 H3 H4 = 1 2 3 4` — иначе Cloudflare не поймёт пакеты;
 - `MTU = 1280`, `PersistentKeepalive = 25` (в секции `[Peer]`);
