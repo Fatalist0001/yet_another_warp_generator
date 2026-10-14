@@ -3,8 +3,8 @@ package cli
 import (
 	"testing"
 
-	"github.com/alexgen/warpgen/config"
-	"github.com/alexgen/warpgen/registration"
+	"github.com/Fatalist0001/yet_another_warp_generator/config"
+	"github.com/Fatalist0001/yet_another_warp_generator/registration"
 )
 
 func TestSplitList(t *testing.T) {

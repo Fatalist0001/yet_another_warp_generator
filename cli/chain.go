@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/alexgen/warpgen/chain"
-	"github.com/alexgen/warpgen/registration"
+	"github.com/Fatalist0001/yet_another_warp_generator/chain"
+	"github.com/Fatalist0001/yet_another_warp_generator/registration"
 )
 
 // runChain — команда `chain`: внешний AWG-туннель → WARP → Psiphon, отдаёт SOCKS5.

@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alexgen/warpgen/registration"
-	"github.com/alexgen/warpgen/tunnel"
+	"github.com/Fatalist0001/yet_another_warp_generator/registration"
+	"github.com/Fatalist0001/yet_another_warp_generator/tunnel"
 )
 
 // DefaultCountries — страны по умолчанию, в порядке приоритета.

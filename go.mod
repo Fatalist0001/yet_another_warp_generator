@@ -1,4 +1,4 @@
-module github.com/alexgen/warpgen
+module github.com/Fatalist0001/yet_another_warp_generator
 
 go 1.26.3
 

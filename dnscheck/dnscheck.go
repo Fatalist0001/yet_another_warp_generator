@@ -16,7 +16,7 @@ import (
 
 	"golang.org/x/net/dns/dnsmessage"
 
-	"github.com/alexgen/warpgen/config"
+	"github.com/Fatalist0001/yet_another_warp_generator/config"
 )
 
 // QueryName — имя, которое запрашиваем для проверки доступности DNS.

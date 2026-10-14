@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alexgen/warpgen/scanner"
+	"github.com/Fatalist0001/yet_another_warp_generator/scanner"
 )
 
 func res(status scanner.Status, loc string) scanner.Result {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/alexgen/warpgen/registration"
+	"github.com/Fatalist0001/yet_another_warp_generator/registration"
 )
 
 func testAccount() registration.Account {

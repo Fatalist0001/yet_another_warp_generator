@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/alexgen/warpgen/cli"
+	"github.com/Fatalist0001/yet_another_warp_generator/cli"
 )
 
 var (

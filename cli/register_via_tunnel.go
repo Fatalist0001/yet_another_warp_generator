@@ -10,10 +10,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/alexgen/warpgen/config"
-	"github.com/alexgen/warpgen/registration"
-	"github.com/alexgen/warpgen/scanner"
-	"github.com/alexgen/warpgen/tunnel"
+	"github.com/Fatalist0001/yet_another_warp_generator/config"
+	"github.com/Fatalist0001/yet_another_warp_generator/registration"
+	"github.com/Fatalist0001/yet_another_warp_generator/scanner"
+	"github.com/Fatalist0001/yet_another_warp_generator/tunnel"
 )
 
 // Имя хоста API Cloudflare, к которому ходим через туннель.

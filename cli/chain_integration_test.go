@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alexgen/warpgen/chain"
+	"github.com/Fatalist0001/yet_another_warp_generator/chain"
 )
 
 func envOr(key, def string) string {

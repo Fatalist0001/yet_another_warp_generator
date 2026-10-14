@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alexgen/warpgen/tunnel"
+	"github.com/Fatalist0001/yet_another_warp_generator/tunnel"
 )
 
 // DefaultPools — диапазоны Cloudflare, в которых живут WARP-endpoint'ы.

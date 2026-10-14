@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/alexgen/warpgen/registration"
+	"github.com/Fatalist0001/yet_another_warp_generator/registration"
 )
 
 // IdentityFileName — имя файла identity, которое читает warp-plus.

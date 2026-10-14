@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alexgen/warpgen/config"
-	"github.com/alexgen/warpgen/registration"
-	"github.com/alexgen/warpgen/scanner"
+	"github.com/Fatalist0001/yet_another_warp_generator/config"
+	"github.com/Fatalist0001/yet_another_warp_generator/registration"
+	"github.com/Fatalist0001/yet_another_warp_generator/scanner"
 )
 
 func requireIntegration(t *testing.T) {
