@@ -1,7 +1,9 @@
 # warpgen — локальный генератор WARP-конфигов для Amnezia
 
-> **Контекст** — подробности в `инструкция-для-opencode.md`.
+> **Контекст** — подробности в `docs/инструкция-для-opencode.md`.
 > **Ядро** — на базе `github.com/vernette/warpscout` (MIT).
+> **Отчёты о тестах схемы WARP → Psiphon** — в `docs/` (`psiphon-test-report.md`,
+> `psiphon-test-report-2.md`, `psiphon-stability-report.md`).
 
 Локальный CLI-инструмент на Go, который регистрирует WARP-аккаунт, сканирует
 рабочие endpoint Cloudflare, проверяет DNS через туннель и выдаёт готовый `.conf`
@@ -62,6 +64,87 @@ colo DME/LED/KJA; они сортируются по возрастанию за
 отвергается: из России WARP всегда его отдаёт, поэтому такие endpoint'ы учитываются,
 а строка ниже предупреждает об этом. Жёсткий режим — флаг `--strict-region`.
 
+## Chain: AWG → WARP → Psiphon
+
+Один WARP из России не меняет выходной регион (`loc=RU`), но если поверх внешнего
+AWG-туннеля запустить **warp-plus** в режиме `--cfon`, он поднимает свой WARP, а
+поверх него — Psiphon, и страну меняет именно Psiphon (замеры — в
+`docs/psiphon-test-report-2.md`). Команда `chain` автоматизирует это: сама проверяет
+внешний туннель, готовит identity для warp-plus, перебирает страны и держит SOCKS5,
+пока процесс жив.
+
+```bash
+# 1. Внешний туннель: сгенерировать .conf и подключить его в AmneziaVPN
+./warpgen gen --endpoint 162.159.192.1:2408 --output warp.conf
+
+# 2. Запустить цепочку (страна NL, SOCKS5 на 127.0.0.1:8086)
+./warpgen chain --countries NL,SE,DE,US,PL
+
+# 3. Пользоваться прокси, пока процесс жив
+curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
+```
+
+warp-plus в проект не вшит — вызывается как внешний релизный бинарник v1.2.6
+(`--warp-plus PATH`, иначе ищется в `PATH` и рядом с `warpgen`). Identity для него
+собирается из аккаунта warpgen в `--cache-dir` (по умолчанию `warpgen-chain/`,
+файл `primary/wgcf-identity.json`, права 0600); каталог в `.gitignore`, потому что
+содержит приватный ключ.
+
+| Флаг | По умолчанию | Смысл |
+|---|---|---|
+| `--warp-plus` | поиск в `PATH` и рядом | путь к бинарнику warp-plus |
+| `--countries` | `NL,SE,DE,US,PL` | страны через запятую, порядок = приоритет (FI вручную, но он не работает) |
+| `--endpoint` | `162.159.192.1:2408` | WARP-endpoint внутреннего туннеля |
+| `--bind` | `127.0.0.1:8086` | адрес SOCKS5-прокси |
+| `--cache-dir` | `warpgen-chain` | каталог identity warp-plus и кэша Psiphon |
+| `--test-url` | `http://example.com/` | URL проверки связи внутри warp-plus (нужен `HEAD=200`, см. ограничения) |
+| `--ready-timeout` | `100s` | сколько ждать готовности одной попытки |
+| `--attempts` | `2` | попыток на страну |
+| `--strict` | `true` | требовать совпадения страны (`--strict=false` — только «не RU») |
+| `--account` | `warpgen-account.json` | файл аккаунта warpgen (источник identity) |
+
+Критерий успеха попытки: `cloudflare.com/cdn-cgi/trace` по системному маршруту даёт
+`warp=on` и узел не из DME/LED/KJA, а через SOCKS5 `ifconfig.co` и `ipinfo.io`
+отвечают валидным JSON с корректным IPv4, при этом ни один не увидел `RU` (и при
+`--strict` хотя бы один назвал запрошенную страну). Сбой всех стран — таблица попыток
+с причиной (нет хендшейка WARP, гейт warp-plus, Psiphon не построил туннель, не та
+страна) и ненулевой код возврата.
+
+### Ручной рецепт тех же шагов
+
+```bash
+# 1. Скан → endpoint с NODE не DME/LED/KJA, затем .conf
+./warpgen scan --max 512 --target 3
+./warpgen gen --endpoint <ip:port> --output warp.conf
+
+# 2. Импортировать .conf в AmneziaVPN и подключить, проверить внешний путь:
+curl -s https://www.cloudflare.com/cdn-cgi/trace     # нужно warp=on, colo не DME/LED/KJA
+
+# 3. Запустить warp-plus вручную (релизный бинарник v1.2.6):
+warp-plus -4 -e 162.159.192.1:2408 -b 127.0.0.1:8086 --cfon --country NL \
+  --test-url http://example.com/ --cache-dir warpgen-chain -v
+
+# 4. Проверить выход через прокси:
+curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
+curl --proxy socks5h://127.0.0.1:8086 https://ipinfo.io/json
+```
+
+### Известные ограничения chain
+
+- **FI не работает** — Psiphon-этап там стабильно падает (`tunnel establishment timeout`),
+  поэтому в список по умолчанию он не входит (хотя запросить можно вручную).
+- **Страна не гарантирована:** Psiphon-этап проходит не всегда, а геосервисы могут
+  расходиться (был случай: один и тот же IP — PL у `ipinfo.io` и FR у `ifconfig.co`);
+  при расхождении печатаются оба ответа.
+- **Скорость** через Psiphon — 0.3–0.8 МБ/с (контроль без Psiphon — до 3.45 МБ/с).
+- **Нужен внешний туннель** (AmneziaVPN и т.п.) без выхода через российские узлы;
+  без него команда завершается с подсказкой.
+- **Грабля warp-plus v1.2.6:** своя проверка связи — это HTTP `HEAD` к `--test-url`
+  с требованием ровно `200`, а Cloudflare сейчас отдаёт на `HEAD /cdn-cgi/trace` 404.
+  Поэтому по умолчанию берётся обходной `--test-url http://example.com/`.
+- **Бинарник — только релизный v1.2.6:** сборка из исходников на Go ≥ 1.24 падает
+  (`panic: tls.ConnectionState doesn't match`), в CI проекта собирают под Go 1.22.
+
 ## Тесты
 
 ```bash
@@ -79,6 +162,12 @@ make test-integration
 WARPGEN_INTEGRATION=1 go test -tags integration ./cli/ -run Integration -v
 ```
 
+Интеграционный тест цепочки (нужен внешний туннель и warp-plus в `PATH`):
+
+```bash
+WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run IntegrationChain -v
+```
+
 ## Структура пакетов
 
 - `registration/` — неофициальный API Cloudflare, регистрация WARP, локальное хранение аккаунта
@@ -86,7 +175,8 @@ WARPGEN_INTEGRATION=1 go test -tags integration ./cli/ -run Integration -v
 - `scanner/` — кандидаты (диапазоны × порты), предфильтр по хендшейку, фильтр colo DME/LED/KJA, учёт региона, ранжирование
 - `dnscheck/` — проверка DNS через туннель (пресеты + произвольный IP)
 - `config/` — генератор `.conf` (WARP-safe AWG 2.0) и генераторы I1 (QUIC/DNS/SIP/STUN)
-- `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `gen`)
+- `chain/` — цепочка «внешний AWG-туннель → WARP → Psiphon»: запуск внешнего warp-plus и проверка SOCKS5
+- `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `gen`, `chain`)
 
 ## WARP-safe инварианты конфига
 
@@ -105,7 +195,8 @@ WARPGEN_INTEGRATION=1 go test -tags integration ./cli/ -run Integration -v
 | Android | Портирование (Go → нативная библиотека, `-buildmode=c-shared`) |
 | Windows | Портирование |
 
-Платформенный код изолирован build tags: `tunnel/bind_linux.go`, `tunnel/bind_other.go`.
+Платформенный код изолирован build tags: `tunnel/bind_linux.go`, `tunnel/bind_other.go`
+(и `chain/proc_unix.go`, `chain/proc_windows.go` для управления группой процессов).
 Никаких linux-only syscall'ов вне этих файлов; root не нужен (кроме `--interface`).
 
 ## Ограничения
