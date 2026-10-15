@@ -67,11 +67,13 @@ func IdentityPath(cacheDir string) string {
 	return filepath.Join(cacheDir, identityDirName, identityFileName)
 }
 
-// ensureIdentity готовит identity warp-plus из аккаунта warpgen, если её ещё нет.
+// EnsureIdentity готовит identity warp-plus из аккаунта warpgen, если её ещё нет.
 // Без готовой identity warp-plus зависает на регистрации: API Cloudflare из РФ
 // часто недоступен напрямую, а таймаута на этом шаге у него нет. Ключи на экран
 // не выводятся, файл пишется с правами 0600.
-func ensureIdentity(cacheDir, accountPath string) error {
+//
+// Экспортирована для локального preflight'а (пакет core проверяет её до старта).
+func EnsureIdentity(cacheDir, accountPath string) error {
 	path := IdentityPath(cacheDir)
 	if _, err := os.Stat(path); err == nil {
 		return nil

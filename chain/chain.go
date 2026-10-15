@@ -151,18 +151,45 @@ type tryFunc func(ctx context.Context, country string) (*Session, *attemptFailur
 
 // Run выполняет всю цепочку. На успехе возвращает живую сессию (её нужно закрыть);
 // при сбое всех стран ошибка имеет тип *Failure с таблицей попыток.
+//
+// Требует, чтобы внешний туннель уже был поднят по системному маршруту
+// (AmneziaVPN и т.п.): это проверяется запросом trace.
 func Run(ctx context.Context, opts Options) (*Session, error) {
 	opts = opts.withDefaults()
-	if len(opts.Countries) == 0 {
-		return nil, errors.New("пустой список стран (--countries)")
+	if err := checkCountries(opts); err != nil {
+		return nil, err
 	}
 	if _, err := checkOuterTunnel(ctx, defaultHTTPClient(), tunnel.TraceURL); err != nil {
 		return nil, err
 	}
-	if err := ensureIdentity(opts.CacheDir, opts.AccountFile); err != nil {
+	return runThrough(ctx, opts)
+}
+
+// RunThrough — то же, что Run, но без проверки внешнего туннеля по системному
+// маршруту. Нужна, когда внешний слой поднимает сама вызывающая сторона и трафик
+// уходит не по системному маршруту: например, userspace-туннель `warpgen run`,
+// который отдаёт warp-plus локальный UDP-форвардер (opts.Endpoint).
+func RunThrough(ctx context.Context, opts Options) (*Session, error) {
+	opts = opts.withDefaults()
+	if err := checkCountries(opts); err != nil {
 		return nil, err
 	}
-	bin, err := resolveWarpPlus(opts.WarpPlus)
+	return runThrough(ctx, opts)
+}
+
+func checkCountries(opts Options) error {
+	if len(opts.Countries) == 0 {
+		return errors.New("пустой список стран (--countries)")
+	}
+	return nil
+}
+
+// runThrough готовит identity warp-plus, находит бинарник и перебирает страны.
+func runThrough(ctx context.Context, opts Options) (*Session, error) {
+	if err := EnsureIdentity(opts.CacheDir, opts.AccountFile); err != nil {
+		return nil, err
+	}
+	bin, err := ResolveWarpPlus(opts.WarpPlus)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +242,7 @@ func tryCountry(ctx context.Context, opts Options, bin, country string) (*Sessio
 		return nil, &attemptFailure{Reason: "не удалось запустить warp-plus", Err: err}
 	}
 
-	client, err := newGeoClient(opts.Bind)
+	client, err := NewGeoClient(opts.Bind)
 	if err != nil {
 		_ = c.Stop()
 		return nil, &attemptFailure{Reason: "SOCKS5-клиент", Err: err}
@@ -251,7 +278,7 @@ func waitReady(ctx context.Context, c *child, client *http.Client, country strin
 		if !c.Alive() {
 			return nil, errors.New("warp-plus завершился до готовности")
 		}
-		if results, err := evaluate(ctx, client, defaultGeoServices, country, opts.Strict); err == nil {
+		if results, err := Evaluate(ctx, client, DefaultGeoServices, country, opts.Strict); err == nil {
 			return results, nil
 		}
 		if time.Now().After(deadline) {
@@ -319,8 +346,9 @@ func waitPortFree(bind string, timeout time.Duration) {
 	}
 }
 
-// resolveWarpPlus ищет бинарник warp-plus: явный путь → PATH → каталог рядом с warpgen.
-func resolveWarpPlus(explicit string) (string, error) {
+// ResolveWarpPlus ищет бинарник warp-plus: явный путь → PATH → каталог рядом с warpgen.
+// Экспортирована для локального preflight'а (пакет core проверяет бинарник до старта).
+func ResolveWarpPlus(explicit string) (string, error) {
 	if explicit != "" {
 		if err := checkExecutable(explicit); err != nil {
 			return "", fmt.Errorf("warp-plus %s: %w", explicit, err)

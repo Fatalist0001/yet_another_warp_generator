@@ -131,18 +131,18 @@ func TestResolveWarpPlusExplicit(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveWarpPlus(bin)
+	got, err := ResolveWarpPlus(bin)
 	if err != nil {
-		t.Fatalf("resolveWarpPlus: %v", err)
+		t.Fatalf("ResolveWarpPlus: %v", err)
 	}
 	if got != bin {
-		t.Errorf("resolveWarpPlus = %q, ожидали %q", got, bin)
+		t.Errorf("ResolveWarpPlus = %q, ожидали %q", got, bin)
 	}
 
-	if _, err := resolveWarpPlus(filepath.Join(dir, "нет-такого")); err == nil {
+	if _, err := ResolveWarpPlus(filepath.Join(dir, "нет-такого")); err == nil {
 		t.Error("несуществующий путь должен давать ошибку")
 	}
-	if _, err := resolveWarpPlus(dir); err == nil {
+	if _, err := ResolveWarpPlus(dir); err == nil {
 		t.Error("каталог вместо бинарника должен давать ошибку")
 	}
 }

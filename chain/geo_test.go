@@ -29,12 +29,12 @@ type svcResp struct {
 }
 
 // servicesFrom поднимает по тестовому сервису на каждый ответ.
-func servicesFrom(t *testing.T, resps ...svcResp) []geoService {
+func servicesFrom(t *testing.T, resps ...svcResp) []GeoService {
 	t.Helper()
-	out := make([]geoService, len(resps))
+	out := make([]GeoService, len(resps))
 	for i, r := range resps {
 		srv := geoServer(t, r.body, r.status)
-		out[i] = geoService{Name: "svc" + strconv.Itoa(i+1), URL: srv.URL}
+		out[i] = GeoService{Name: "svc" + strconv.Itoa(i+1), URL: srv.URL}
 	}
 	return out
 }
@@ -43,7 +43,7 @@ const nlBody = `{"ip":"203.0.113.9","country":"NL","org":"AS123 Test"}`
 
 func TestEvaluateSuccess(t *testing.T) {
 	svcs := servicesFrom(t, svcResp{nlBody, 200})
-	results, err := evaluate(context.Background(), http.DefaultClient, svcs, "NL", true)
+	results, err := Evaluate(context.Background(), http.DefaultClient, svcs, "NL", true)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestEvaluateHTMLChallenge(t *testing.T) {
 		svcResp{"<html><title>Just a moment...</title></html>", 200},
 		svcResp{nlBody, 200},
 	)
-	results, err := evaluate(context.Background(), http.DefaultClient, svcs, "NL", true)
+	results, err := Evaluate(context.Background(), http.DefaultClient, svcs, "NL", true)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestEvaluateRateLimitedSkipped(t *testing.T) {
 		svcResp{"rate limited", 429},
 		svcResp{nlBody, 200},
 	)
-	results, err := evaluate(context.Background(), http.DefaultClient, svcs, "NL", true)
+	results, err := Evaluate(context.Background(), http.DefaultClient, svcs, "NL", true)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -87,28 +87,28 @@ func TestEvaluateAllSkipped(t *testing.T) {
 		svcResp{"rate limited", 429},
 		svcResp{"<html>challenge</html>", 200},
 	)
-	if _, err := evaluate(context.Background(), http.DefaultClient, svcs, "NL", true); err != errNoGeoService {
+	if _, err := Evaluate(context.Background(), http.DefaultClient, svcs, "NL", true); err != errNoGeoService {
 		t.Fatalf("ожидали errNoGeoService, получили %v", err)
 	}
 }
 
 func TestEvaluateRU(t *testing.T) {
 	svcs := servicesFrom(t, svcResp{`{"ip":"95.1.2.3","country":"RU"}`, 200})
-	if _, err := evaluate(context.Background(), http.DefaultClient, svcs, "NL", true); err != errExitRU {
+	if _, err := Evaluate(context.Background(), http.DefaultClient, svcs, "NL", true); err != errExitRU {
 		t.Fatalf("ожидали errExitRU, получили %v", err)
 	}
 }
 
 func TestEvaluateStrictMismatch(t *testing.T) {
 	svcs := servicesFrom(t, svcResp{`{"ip":"203.0.113.5","country":"US"}`, 200})
-	if _, err := evaluate(context.Background(), http.DefaultClient, svcs, "NL", true); err != errWrongCountry {
+	if _, err := Evaluate(context.Background(), http.DefaultClient, svcs, "NL", true); err != errWrongCountry {
 		t.Fatalf("ожидали errWrongCountry, получили %v", err)
 	}
 }
 
 func TestEvaluateNonStrictAcceptsOtherCountry(t *testing.T) {
 	svcs := servicesFrom(t, svcResp{`{"ip":"203.0.113.5","country":"US"}`, 200})
-	if _, err := evaluate(context.Background(), http.DefaultClient, svcs, "NL", false); err != nil {
+	if _, err := Evaluate(context.Background(), http.DefaultClient, svcs, "NL", false); err != nil {
 		t.Fatalf("без strict достаточно «не RU», получили %v", err)
 	}
 }
@@ -120,7 +120,7 @@ func TestEvaluateServiceDisagreement(t *testing.T) {
 		svcResp{`{"ip":"57.128.192.119","country":"PL","org":"AS16276 OVH"}`, 200},
 		svcResp{`{"ip":"57.128.192.119","country":"FR"}`, 200},
 	)
-	results, err := evaluate(context.Background(), http.DefaultClient, svcs, "PL", true)
+	results, err := Evaluate(context.Background(), http.DefaultClient, svcs, "PL", true)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -136,17 +136,17 @@ func TestQueryGeoRejectsNonIPv4(t *testing.T) {
 	}
 }
 
-// newGeoClient должен реально ходить через SOCKS5 и резолвить имя на стороне
+// NewGeoClient должен реально ходить через SOCKS5 и резолвить имя на стороне
 // прокси (аналог socks5h) — проверяем на поддельном SOCKS5-сервере.
 func TestGeoClientThroughSOCKS5(t *testing.T) {
 	srv := geoServer(t, `{"ip":"198.51.100.7","country":"SE","org":"AS999 Test"}`, 200)
 
 	socksAddr := fakeSOCKS(t, srv.Listener.Addr().String())
-	client, err := newGeoClient(socksAddr)
+	client, err := NewGeoClient(socksAddr)
 	if err != nil {
-		t.Fatalf("newGeoClient: %v", err)
+		t.Fatalf("NewGeoClient: %v", err)
 	}
-	res, err := queryGeo(context.Background(), client, geoService{Name: "socks", URL: "http://geotest.invalid/json"})
+	res, err := queryGeo(context.Background(), client, GeoService{Name: "socks", URL: "http://geotest.invalid/json"})
 	if err != nil {
 		t.Fatalf("queryGeo через SOCKS5: %v", err)
 	}

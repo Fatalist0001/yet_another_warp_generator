@@ -12,8 +12,10 @@ test-account.json
 warpgen-account.json
 *-account.json
 
-# Каталог цепочки `warpgen chain`: identity warp-plus (приватный ключ) и кэш Psiphon
+# Каталоги цепочки `warpgen chain` и e2e-прогонов `warpgen run`:
+# identity warp-plus (приватный ключ) и кэш Psiphon
 warpgen-chain/
+warpgen-e2e/
 
 # --- Локальные документы, не для репозитория ---
 

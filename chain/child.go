@@ -97,9 +97,10 @@ func (c *child) Stop() error {
 	return nil
 }
 
-// newGeoClient — HTTP-клиент, ходящий через SOCKS5 warp-plus. Имена резолвятся на
+// NewGeoClient — HTTP-клиент, ходящий через SOCKS5 warp-plus. Имена резолвятся на
 // стороне прокси (аналог socks5h), поэтому локальный DNS не задействован.
-func newGeoClient(bind string) (*http.Client, error) {
+// Экспортирован для встраивания (пакет core мониторит живую цепочку).
+func NewGeoClient(bind string) (*http.Client, error) {
 	d, err := proxy.SOCKS5("tcp", bind, nil, proxy.Direct)
 	if err != nil {
 		return nil, err

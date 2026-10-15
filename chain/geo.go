@@ -12,15 +12,15 @@ import (
 	"sync"
 )
 
-// geoService — внешний сервис, по которому проверяем выходной IP и страну.
-type geoService struct {
+// GeoService — внешний сервис, по которому проверяем выходной IP и страну.
+type GeoService struct {
 	Name string
 	URL  string
 }
 
-// defaultGeoServices — два независимых геосервиса: одного мало, они могут
+// DefaultGeoServices — два независимых геосервиса: одного мало, они могут
 // расходиться по стране (на замерах так было с PL: ipinfo.io — PL, ifconfig.co — FR).
-var defaultGeoServices = []geoService{
+var DefaultGeoServices = []GeoService{
 	{Name: "ifconfig.co", URL: "https://ifconfig.co/json"},
 	{Name: "ipinfo.io", URL: "https://ipinfo.io/json"},
 }
@@ -56,7 +56,7 @@ var (
 // queryGeo запрашивает один геосервис через SOCKS5. Ошибка означает «сервис
 // пропускаем»: 429 (rate limit), не-JSON (HTML-челлендж Cloudflare), таймаут или
 // не-IPv4 адрес — это не сбой цепочки, а повод положиться на второй сервис.
-func queryGeo(ctx context.Context, client *http.Client, svc geoService) (GeoResult, error) {
+func queryGeo(ctx context.Context, client *http.Client, svc GeoService) (GeoResult, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, geoRequestTimeout)
 	defer cancel()
 
@@ -102,15 +102,18 @@ func queryGeo(ctx context.Context, client *http.Client, svc geoService) (GeoResu
 	}, nil
 }
 
-// evaluate опрашивает геосервисы параллельно и применяет критерий успеха:
+// Evaluate опрашивает геосервисы параллельно и применяет критерий успеха:
 // минимум один ответил, ни один не отдал RU, и при strict — хотя бы один назвал
 // запрошенную страну. Результаты возвращаются даже при ошибке (для отчёта).
-func evaluate(ctx context.Context, client *http.Client, services []geoService, country string, strict bool) ([]GeoResult, error) {
+//
+// Экспортирован для встраивания (пакет core мониторит живую цепочку тем же
+// критерием, что и готовность).
+func Evaluate(ctx context.Context, client *http.Client, services []GeoService, country string, strict bool) ([]GeoResult, error) {
 	results := make([]GeoResult, len(services))
 	var wg sync.WaitGroup
 	for i, svc := range services {
 		wg.Add(1)
-		go func(i int, svc geoService) {
+		go func(i int, svc GeoService) {
 			defer wg.Done()
 			res, err := queryGeo(ctx, client, svc)
 			if err == nil {

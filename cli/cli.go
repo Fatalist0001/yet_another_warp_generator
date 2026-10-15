@@ -47,6 +47,8 @@ func Run(args []string) error {
 		return runGen(args[1:])
 	case "chain":
 		return runChain(args[1:])
+	case "run":
+		return runRun(args[1:])
 	default:
 		return fmt.Errorf("неизвестная команда: %s (используйте help)", command)
 	}
@@ -546,6 +548,7 @@ func printUsage() {
   dns-check  Проверить DNS через туннель на выбранном endpoint
   gen        Сгенерировать .conf для AmneziaWG
   chain      Запустить warp-plus (WARP → Psiphon) поверх внешнего AWG-туннеля
+  run        Поднять туннель внутри процесса и отдать SOCKS5 (без root и TUN)
   version    Версия утилиты
   help       Показать эту справку
 
