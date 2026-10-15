@@ -14,12 +14,16 @@ import (
 	"github.com/Fatalist0001/yet_another_warp_generator/chain"
 	"github.com/Fatalist0001/yet_another_warp_generator/core"
 	"github.com/Fatalist0001/yet_another_warp_generator/registration"
+	"github.com/Fatalist0001/yet_another_warp_generator/vpn"
 )
 
-// runRun — команда `run`: самодостаточный пайплайн без root, TUN и внешнего
-// VPN-клиента. Внутри процесса поднимается userspace-туннель до Cloudflare, через
-// него на внутренний WARP уходит локальный UDP-форвардер, поверх warp-plus поднимает
-// Psiphon, и наружу отдаётся SOCKS5 с выходом вне РФ.
+// runRun — команда `run`: самодостаточный пайплайн. Внутри процесса поднимается
+// userspace-туннель до Cloudflare, через него на внутренний WARP уходит локальный
+// UDP-форвардер, поверх warp-plus поднимает Psiphon, и наружу отдаётся SOCKS5 с
+// выходом вне РФ.
+//
+// Без --tun для этого не нужны root и TUN: наружу смотрит только SOCKS5.
+// С --tun весь трафик машины идёт по той же цепочке через TUN-интерфейс.
 func runRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	// Справка по флагам печатается в stdout: `warpgen run --help` — рабочая
@@ -39,6 +43,12 @@ func runRun(args []string) error {
 	maxCand := fs.Int("max", 512, "сколько кандидатов проверять за скан")
 	strictRegion := fs.Bool("strict-region", false, "жёсткий скан: отвергать endpoint'ы с регионом RU")
 	account := fs.String("account", registration.DefaultAccountFile, "файл аккаунта WARP (ключи туннеля и identity)")
+	tun := fs.Bool("tun", false, "системный туннель: весь трафик машины идёт по цепочке (нужен root)")
+	tunName := fs.String("tun-name", vpn.DefaultTUNName, "имя TUN-интерфейса")
+	tunMTU := fs.Int("tun-mtu", vpn.DefaultTUNMTU, "MTU TUN-интерфейса")
+	dns := fs.String("dns", vpn.DefaultDNS, "резолверы для DNS через цепочку (ip[:port] через запятую)")
+	udp := fs.String("udp", string(vpn.UDPDrop), "политика UDP: drop — отбрасывать (QUIC ломается, приложения уходят на TCP)")
+	dryRun := fs.Bool("dry-run", false, "показать системные команды и ничего не менять (с --tun)")
 	jsonOut := fs.Bool("json", false, "события строками JSON (по одному объекту в строке)")
 	debug := fs.Bool("debug", false, "подробный вывод (в stderr)")
 	if err := fs.Parse(args); err != nil {
@@ -60,6 +70,12 @@ func runRun(args []string) error {
 	}
 
 	cfg, err := core.NewConfig(core.Options{
+		TUN:           *tun,
+		TUNName:       *tunName,
+		TUNMTU:        *tunMTU,
+		DNS:           splitList(*dns),
+		UDP:           *udp,
+		DryRun:        *dryRun,
 		AccountFile:   *account,
 		WarpPlus:      *warpPlus,
 		CacheDir:      *cacheDir,

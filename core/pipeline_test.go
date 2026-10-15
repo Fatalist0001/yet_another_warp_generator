@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Fatalist0001/yet_another_warp_generator/tunnel"
+	"github.com/Fatalist0001/yet_another_warp_generator/vpn"
 )
 
 // endpoint162 — кандидат по умолчанию для тестов.
@@ -36,6 +37,271 @@ func happyPath(t *testing.T) (*tunnelFleet, *fakeLocator, *fakeChain, *fakeProbe
 	fleet := &tunnelFleet{}
 	loc := &fakeLocator{endpoints: []Endpoint{endpoint162("162.159.192.1:2408")}}
 	return fleet, loc, &fakeChain{}, &fakeProber{}
+}
+
+// tunConfig — конфигурация happy path с системным туннелем.
+func tunConfig(t *testing.T, fleet *tunnelFleet, loc *fakeLocator, ch *fakeChain, pr *fakeProber, tun *fakeTUN) Config {
+	t.Helper()
+	cfg := testConfig(fleet, loc, ch, pr)
+	cfg.TUN = tun.factory()
+	return cfg
+}
+
+// stepsAfter возвращает вызовы системного туннеля после шага с указанным номером.
+func stepCalls(steps []tunStep, call string) []tunStep {
+	var out []tunStep
+	for _, s := range steps {
+		if s.call == call {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// В режиме --tun маршруты применяются после ready, а снимаются до остановки цепочки.
+func TestRunTunStartsAfterReady(t *testing.T) {
+	fleet, loc, ch, pr := happyPath(t)
+	tun := &fakeTUN{}
+	events, cancel := startRun(t, tunConfig(t, fleet, loc, ch, pr, tun))
+
+	ready := nextUntil(t, events, EventReady, "готовность")
+	if ready.SOCKS != "127.0.0.1:8086" {
+		t.Fatalf("ready = %+v", ready)
+	}
+	// Маршруты применяются только после ready: событие tun_up идёт за ним.
+	up := expectEvent(t, events, EventTunUp, "после готовности")
+	if up.TUN != "warpgen0" || up.MTU != 1400 {
+		t.Errorf("tun_up = %+v", up)
+	}
+	if applied := expectEvent(t, events, EventRoutesApplied, "после TUN"); applied.Routes != 9 {
+		t.Errorf("routes_applied = %+v", applied)
+	}
+	if sel := expectEvent(t, events, EventDNSSelected, "после маршрутов"); sel.DNS != "1.1.1.1:53" || sel.RTTMS != 20 {
+		t.Errorf("dns_selected = %+v", sel)
+	}
+
+	cancel()
+	evs := drain(t, events)
+	if len(evs) != 2 || evs[0].Kind != EventRoutesReverted || evs[1].Kind != EventStopped {
+		t.Fatalf("остановка: %+v", evs)
+	}
+	if evs[1].Err != "" {
+		t.Errorf("остановка с ошибкой: %q", evs[1].Err)
+	}
+
+	created, starts, stops := tun.counts()
+	if created != 1 || starts != 1 || stops != 1 {
+		t.Errorf("туннель: создан %d, запусков %d, остановок %d", created, starts, stops)
+	}
+	starts_ := stepCalls(tun.calls(), "start")
+	if len(starts_) != 1 || starts_[0].socks != "127.0.0.1:8086" || starts_[0].endpoint != "162.159.192.1:2408" {
+		t.Errorf("старт туннеля: %+v", starts_)
+	}
+	if calls, closed, open := ch.counts(); calls != 1 || closed != 1 || open != 0 {
+		t.Errorf("цепочка: вызовов %d, закрыто %d, живо %d", calls, closed, open)
+	}
+	if createdTunnels, closedTunnels := fleet.counts(); createdTunnels != 1 || closedTunnels != 1 {
+		t.Errorf("туннели: создано %d, закрыто %d", createdTunnels, closedTunnels)
+	}
+}
+
+// При смене страны маршруты не снимаются: мост просто переезжает на новый SOCKS.
+func TestRunTunKeepsRoutesOnFailover(t *testing.T) {
+	fleet, loc, _, _ := happyPath(t)
+	ch := &fakeChain{steps: []chainStep{{}, {}}}
+	pr := &fakeProber{steps: []probeStep{
+		{res: ProbeResult{Country: "RU", IP: "95.1.2.3", Services: 2, RU: true}},
+		{res: healthyProbe()},
+	}}
+	tun := &fakeTUN{}
+	cfg := tunConfig(t, fleet, loc, ch, pr, tun)
+	cfg.Countries = []string{"NL", "SE"}
+	events, cancel := startRun(t, cfg)
+	defer cancel()
+
+	nextUntil(t, events, EventReady, "первая готовность")
+	nextUntil(t, events, EventDNSSelected, "DNS первого запуска")
+	nextUntil(t, events, EventFailover, "выход RU")
+	nextUntil(t, events, EventReady, "готовность после смены страны")
+	nextUntil(t, events, EventDNSSelected, "DNS после смены страны")
+
+	cancel()
+	evs := drain(t, events)
+	if len(evs) != 2 || evs[0].Kind != EventRoutesReverted {
+		t.Fatalf("остановка: %+v", evs)
+	}
+
+	created, starts, stops := tun.counts()
+	if created != 1 || starts != 1 || stops != 1 {
+		t.Errorf("туннель: создан %d, запусков %d, остановок %d — при failover его не пересоздают", created, starts, stops)
+	}
+	socks := stepCalls(tun.calls(), "socks")
+	if len(socks) != 1 || socks[0].socks != "127.0.0.1:8086" {
+		t.Errorf("смена SOCKS5: %+v", socks)
+	}
+	// Маршруты не пересоздавали: исключение endpoint осталось прежним.
+	if got := stepCalls(tun.calls(), "endpoint"); len(got) != 0 {
+		t.Errorf("при смене страны endpoint не менялся: %+v", got)
+	}
+}
+
+// Смена внешнего endpoint обновляет исключение /32 и переводит мост на новый SOCKS.
+func TestRunTunUpdatesExclusionOnEndpointChange(t *testing.T) {
+	fleet := &tunnelFleet{TraceFn: func(call int) (tunnel.TraceResult, error) {
+		if call == 1 || call == 3 {
+			return traceOK(), nil
+		}
+		return tunnel.TraceResult{}, errors.New("таймаут")
+	}}
+	loc := &fakeLocator{endpoints: []Endpoint{endpoint162("162.159.192.1:2408")}}
+	ch := &fakeChain{steps: []chainStep{{}, {}}}
+	tun := &fakeTUN{}
+	events, cancel := startRun(t, tunConfig(t, fleet, loc, ch, &fakeProber{}, tun))
+	defer cancel()
+
+	nextUntil(t, events, EventDNSSelected, "первый запуск")
+	nextUntil(t, events, EventReady, "готовность после пересоздания")
+	nextUntil(t, events, EventDNSSelected, "DNS после пересоздания")
+
+	cancel()
+	drain(t, events)
+
+	calls := tun.calls()
+	// Порядок: start → (смена endpoint) → socks. Исключение обновляется до
+	// создания нового туннеля, иначе его сокет зациклится в TUN.
+	var order []string
+	for _, s := range calls {
+		order = append(order, s.call)
+	}
+	want := []string{"start", "endpoint", "socks", "stop"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Errorf("порядок вызовов: %v, ожидали %v", order, want)
+	}
+	if eps := stepCalls(calls, "endpoint"); len(eps) != 1 || eps[0].endpoint != "162.159.192.1:2408" {
+		t.Errorf("исключение endpoint: %+v", eps)
+	}
+}
+
+// Ошибка запуска системного туннеля останавливает пайплайн и освобождает цепочку.
+func TestRunTunStartFailure(t *testing.T) {
+	fleet, loc, ch, pr := happyPath(t)
+	tun := &fakeTUN{StartErr: errors.New("нет прав на TUN")}
+	events, cancel := startRun(t, tunConfig(t, fleet, loc, ch, pr, tun))
+	defer cancel()
+
+	evs := drain(t, events)
+	last := evs[len(evs)-1]
+	if last.Kind != EventStopped || !strings.Contains(last.Err, "системный туннель") {
+		t.Fatalf("остановка: %+v", last)
+	}
+	if strings.Contains(last.Err, "нет прав") == false {
+		t.Errorf("текст ошибки = %q", last.Err)
+	}
+	for _, ev := range evs {
+		if ev.Kind == EventRoutesApplied {
+			t.Errorf("маршруты не должны применяться: %+v", ev)
+		}
+	}
+	if calls, closed, open := ch.counts(); calls != 1 || closed != 1 || open != 0 {
+		t.Errorf("цепочка: вызовов %d, закрыто %d, живо %d", calls, closed, open)
+	}
+	if _, _, stops := tun.counts(); stops != 1 {
+		t.Errorf("остановок туннеля %d, ожидали 1", stops)
+	}
+}
+
+// Ошибка перевода моста на новый SOCKS останавливает пайплайн и снимает маршруты.
+func TestRunTunSocksUpdateFailure(t *testing.T) {
+	fleet, loc, _, _ := happyPath(t)
+	ch := &fakeChain{steps: []chainStep{{}, {}}}
+	pr := &fakeProber{steps: []probeStep{
+		{res: ProbeResult{Country: "RU", IP: "95.1.2.3", Services: 2, RU: true}},
+	}}
+	tun := &fakeTUN{SocksErr: errors.New("мост не отвечает")}
+	cfg := tunConfig(t, fleet, loc, ch, pr, tun)
+	cfg.Countries = []string{"NL", "SE"}
+	events, cancel := startRun(t, cfg)
+	defer cancel()
+
+	nextUntil(t, events, EventFailover, "выход RU")
+	evs := drain(t, events)
+	last := evs[len(evs)-1]
+	if last.Kind != EventStopped || !strings.Contains(last.Err, "смена SOCKS5") {
+		t.Fatalf("остановка: %+v", last)
+	}
+	var reverted bool
+	for _, ev := range evs {
+		if ev.Kind == EventRoutesReverted {
+			reverted = true
+		}
+	}
+	if !reverted {
+		t.Errorf("маршруты должны быть сняты: %+v", evs)
+	}
+}
+
+// Сбой выбора DNS не останавливает пайплайн: маршруты уже применены.
+func TestRunTunDNSFailureIsNotFatal(t *testing.T) {
+	fleet, loc, ch, pr := happyPath(t)
+	tun := &fakeTUN{Status: vpn.Status{DNSErr: "ни один DNS не ответил через цепочку"}}
+	events, cancel := startRun(t, tunConfig(t, fleet, loc, ch, pr, tun))
+	defer cancel()
+
+	nextUntil(t, events, EventTunUp, "TUN поднят")
+	failed := nextUntil(t, events, EventDNSFailed, "отказ DNS")
+	if !strings.Contains(failed.Reason, "ни один DNS") {
+		t.Errorf("dns_failed = %+v", failed)
+	}
+
+	cancel()
+	evs := drain(t, events)
+	last := evs[len(evs)-1]
+	if last.Kind != EventStopped || last.Err != "" {
+		t.Errorf("остановка: %+v", last)
+	}
+}
+
+// Без флага --tun системный туннель не создаётся, а события о нём не появляются.
+func TestRunWithoutTunHasNoTunEvents(t *testing.T) {
+	fleet, loc, ch, pr := happyPath(t)
+	events, cancel := startRun(t, testConfig(fleet, loc, ch, pr))
+	nextUntil(t, events, EventReady, "готовность")
+	cancel()
+
+	for _, ev := range drain(t, events) {
+		switch ev.Kind {
+		case EventTunUp, EventRoutesApplied, EventRoutesReverted, EventDNSSelected, EventDNSFailed:
+			t.Errorf("событие системного туннеля без --tun: %+v", ev)
+		}
+	}
+}
+
+// В режиме --tun после остановки не остаётся лишних горутин.
+func TestRunTunLeavesNoGoroutines(t *testing.T) {
+	base := runtime.NumGoroutine()
+
+	fleet, loc, ch, pr := happyPath(t)
+	tun := &fakeTUN{}
+	events, cancel := startRun(t, tunConfig(t, fleet, loc, ch, pr, tun))
+	nextUntil(t, events, EventDNSSelected, "готовность с TUN")
+	cancel()
+	drain(t, events)
+	closedChannel(t, events)
+
+	if _, _, stops := tun.counts(); stops != 1 {
+		t.Errorf("остановок туннеля %d, ожидали 1", stops)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		runtime.Gosched()
+		if n := runtime.NumGoroutine(); n <= base+2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("после остановки осталось %d горутин (было %d)", runtime.NumGoroutine(), base)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // Проверяем порядок событий happy path и чистую остановку по ctx.

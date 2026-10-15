@@ -21,6 +21,11 @@ func TestEventString(t *testing.T) {
 		{"страна", Event{Kind: EventPsiphonStarting, Country: "NL"}, []string{"NL", "warp-plus"}},
 		{"готовность", Event{Kind: EventReady, SOCKS: "127.0.0.1:8086", Country: "NL", IP: "203.0.113.9", Org: "AS123 Test", Seconds: 42},
 			[]string{"socks5://127.0.0.1:8086", "NL", "203.0.113.9", "AS123 Test", "42s"}},
+		{"системный туннель", Event{Kind: EventTunUp, TUN: "warpgen0", MTU: 1400}, []string{"warpgen0", "1400"}},
+		{"маршруты применены", Event{Kind: EventRoutesApplied, TUN: "warpgen0", Routes: 9}, []string{"warpgen0", "9"}},
+		{"маршруты сняты", Event{Kind: EventRoutesReverted}, []string{"маршруты", "DNS"}},
+		{"DNS через цепочку", Event{Kind: EventDNSSelected, DNS: "1.1.1.1:53", RTTMS: 20}, []string{"1.1.1.1:53", "20ms"}},
+		{"DNS не настроен", Event{Kind: EventDNSFailed, Reason: "нет resolvectl"}, []string{"нет resolvectl"}},
 		{"просадка", Event{Kind: EventDegraded, Fails: 2, Reason: "нет ответа"}, []string{"2", "нет ответа"}},
 		{"смена звена", Event{Kind: EventFailover, Reason: "нет хендшейка"}, []string{"нет хендшейка"}},
 		{"остановка", Event{Kind: EventStopped}, []string{"остановлено"}},
@@ -57,13 +62,48 @@ func TestEventJSONShape(t *testing.T) {
 			t.Errorf("в JSON нет ключа %q: %s", key, data)
 		}
 	}
-	for _, key := range []string{"endpoint", "colo", "region", "reason", "error", "fails"} {
+	for _, key := range []string{"endpoint", "colo", "region", "reason", "error", "fails", "tun", "mtu", "routes", "dns"} {
 		if _, ok := got[key]; ok {
 			t.Errorf("пустое поле %q не должно попадать в JSON: %s", key, data)
 		}
 	}
 	if got["event"] != "ready" {
 		t.Errorf("event = %v", got["event"])
+	}
+}
+
+// События системного туннеля не несут лишних ключей и не содержат секретов.
+func TestTunEventJSONShape(t *testing.T) {
+	cases := []struct {
+		ev   Event
+		have []string
+		miss []string
+	}{
+		{Event{Kind: EventTunUp, TUN: "warpgen0", MTU: 1400}, []string{"tun", "mtu"}, []string{"routes", "dns"}},
+		{Event{Kind: EventRoutesApplied, TUN: "warpgen0", Routes: 9}, []string{"tun", "routes"}, []string{"mtu", "dns"}},
+		{Event{Kind: EventRoutesReverted}, nil, []string{"tun", "mtu", "routes", "dns"}},
+		{Event{Kind: EventDNSSelected, DNS: "1.1.1.1:53", RTTMS: 20}, []string{"dns", "rtt_ms"}, []string{"tun", "routes"}},
+		{Event{Kind: EventDNSFailed, Reason: "нет resolvectl"}, []string{"reason"}, []string{"dns", "tun"}},
+	}
+	for _, c := range cases {
+		data, err := json.Marshal(c.ev)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		for _, key := range c.have {
+			if _, ok := got[key]; !ok {
+				t.Errorf("%s: в JSON нет ключа %q: %s", c.ev.Kind, key, data)
+			}
+		}
+		for _, key := range c.miss {
+			if _, ok := got[key]; ok {
+				t.Errorf("%s: лишний ключ %q: %s", c.ev.Kind, key, data)
+			}
+		}
 	}
 }
 
@@ -76,6 +116,11 @@ func TestEventNames(t *testing.T) {
 		EventForwarderUp:      "forwarder_up",
 		EventPsiphonStarting:  "psiphon_starting",
 		EventReady:            "ready",
+		EventTunUp:            "tun_up",
+		EventRoutesApplied:    "routes_applied",
+		EventRoutesReverted:   "routes_reverted",
+		EventDNSSelected:      "dns_selected",
+		EventDNSFailed:        "dns_failed",
 		EventDegraded:         "degraded",
 		EventFailover:         "failover",
 		EventStopped:          "stopped",

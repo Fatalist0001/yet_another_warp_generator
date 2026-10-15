@@ -24,6 +24,18 @@ const (
 	EventPsiphonStarting Kind = "psiphon_starting"
 	// EventReady — SOCKS5 поднят и ведёт в нужную страну.
 	EventReady Kind = "ready"
+	// EventTunUp — системный TUN поднят, мост TUN→SOCKS работает (режим --tun).
+	EventTunUp Kind = "tun_up"
+	// EventRoutesApplied — маршруты (исключение endpoint'а, default через TUN,
+	// blackhole IPv6) применены.
+	EventRoutesApplied Kind = "routes_applied"
+	// EventRoutesReverted — маршруты и DNS возвращены в исходное состояние.
+	EventRoutesReverted Kind = "routes_reverted"
+	// EventDNSSelected — выбран резолвер для DNS через цепочку.
+	EventDNSSelected Kind = "dns_selected"
+	// EventDNSFailed — резолвер не выбран или системный DNS не перенастроен
+	// (возможна утечка DNS).
+	EventDNSFailed Kind = "dns_failed"
 	// EventDegraded — единичный сбой мониторинга, звено пока не меняем.
 	EventDegraded Kind = "degraded"
 	// EventFailover — смена звена: следующий endpoint или следующая страна.
@@ -53,6 +65,14 @@ type Event struct {
 	Country string `json:"country,omitempty"`
 	IP      string `json:"ip,omitempty"`
 	Org     string `json:"org,omitempty"`
+
+	// TUN / MTU — поднятый системный интерфейс (для tun_up/routes_applied).
+	TUN string `json:"tun,omitempty"`
+	MTU int    `json:"mtu,omitempty"`
+	// Routes — сколько системных команд применили (для routes_applied).
+	Routes int `json:"routes,omitempty"`
+	// DNS — выбранный резолвер (для dns_selected).
+	DNS string `json:"dns,omitempty"`
 	// Seconds — сколько заняла подготовка цепочки (для ready).
 	Seconds float64 `json:"seconds,omitempty"`
 
@@ -97,6 +117,19 @@ func (e Event) String() string {
 			fmt.Fprintf(&b, ", подготовка %s", time.Duration(e.Seconds*float64(time.Second)).Round(time.Second))
 		}
 		return b.String()
+	case EventTunUp:
+		return fmt.Sprintf("системный туннель поднят: %s, MTU %d", dash(e.TUN), e.MTU)
+	case EventRoutesApplied:
+		return fmt.Sprintf("маршруты применены: %s, команд %d", dash(e.TUN), e.Routes)
+	case EventRoutesReverted:
+		return "маршруты и DNS сняты"
+	case EventDNSSelected:
+		if e.RTTMS > 0 {
+			return fmt.Sprintf("DNS через цепочку: %s (%dms)", dash(e.DNS), e.RTTMS)
+		}
+		return "DNS через цепочку: " + dash(e.DNS)
+	case EventDNSFailed:
+		return "DNS не настроен: " + dash(e.Reason)
 	case EventDegraded:
 		return fmt.Sprintf("просадка (сбой %d подряд): %s", e.Fails, dash(e.Reason))
 	case EventFailover:

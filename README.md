@@ -201,11 +201,18 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
 | `--max` | `512` | сколько кандидатов проверять за скан |
 | `--strict-region` | `false` | жёсткий скан: отвергать endpoint'ы с регионом RU |
 | `--account` | `warpgen-account.json` | файл аккаунта warpgen |
+| `--tun` | `false` | системный туннель: весь трафик машины идёт по цепочке (нужен root) |
+| `--tun-name` | `warpgen0` | имя TUN-интерфейса |
+| `--tun-mtu` | `1400` | MTU TUN-интерфейса |
+| `--dns` | `1.1.1.1:53,8.8.8.8:53` | резолверы для DNS через цепочку (`ip[:port]` через запятую) |
+| `--udp` | `drop` | политика UDP: `drop` — отбрасывать (QUIC ломается, приложения уходят на TCP) |
+| `--dry-run` | `false` | с `--tun`: показать системные команды и ничего не менять |
 | `--json` | `false` | события строками JSON (по одному объекту в строке) |
 | `--debug` | `false` | служебный вывод (в stderr) |
 
 События пайплайна: `endpoint_selected`, `outer_up`, `outer_checked`, `forwarder_up`,
-`psiphon_starting`, `ready`, `degraded`, `failover`, `stopped`. Секретов (ключей,
+`psiphon_starting`, `ready`, `tun_up`, `routes_applied`, `routes_reverted`,
+`dns_selected`, `dns_failed`, `degraded`, `failover`, `stopped`. Секретов (ключей,
 токенов) в них нет; в JSON-режиме подсказки уходят в stderr, чтобы поток stdout
 оставался чистым NDJSON.
 
@@ -219,6 +226,77 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
 - **Аккаунт нужен заранее:** `warpgen register` или готовый `--account`.
 - Root не нужен. Внешний туннель поднимается внутри процесса, поэтому системный
   маршрут не меняется и посторонний VPN не требуется (но и не мешает).
+
+### Системный туннель: `run --tun`
+
+`--tun` заводит **весь трафик машины** в ту же цепочку:
+
+```
+приложение → TUN (198.18.0.1/15) → мост (gVisor netstack, promiscuous + spoofing)
+                                     ├─ TCP → SOCKS5 CONNECT → Psiphon → WARP → AWG → Cloudflare
+                                     ├─ UDP/TCP 53 → DNS-over-TCP через SOCKS5 → выбранный резолвер
+                                     └─ остальной UDP, ICMP, IPv6 → отбрасываются (со счётчиками)
+```
+
+```bash
+sudo ./warpgen run --tun                        # весь трафик машины через цепочку
+sudo ./warpgen run --tun --dns 1.1.1.1:53,8.8.8.8:53
+sudo ./warpgen run --tun --dry-run              # только напечатать системные команды
+curl https://ifconfig.co/json                   # уже без --proxy: трафик идёт через туннель
+```
+
+**Нужен root:** создаётся TUN-интерфейс (`/dev/net/tun`) и меняются маршруты. Без
+прав команда сразу выходит с подсказкой и ничего не делает; `--dry-run` работает без
+root и **не** создаёт TUN и не трогает маршруты — он только читает текущий маршрут по
+умолчанию (чтобы напечатать реальные команды) и печатает их.
+
+Порядок запуска: цепочка готова (`ready`) → TUN и мост → маршруты → выбор DNS.
+Остановка — в обратном порядке: маршруты и DNS, затем TUN и мост, затем цепочка.
+Ошибка на любом шаге откатывает уже применённое. Ctrl+C снимает всё сам;
+после `kill -9` маршруты придётся снять вручную (команды — в чек-листе ниже).
+
+Что применяется (и снимается при выходе):
+
+1. `ip link` — адрес и MTU TUN из `198.18.0.0/15`;
+2. маршрут `/32` внешнего endpoint через физический шлюз: иначе UDP-сокет внешнего
+   туннеля ушёл бы в наш же TUN и цепочка зациклилась; при смене endpoint маршрут
+   обновляется;
+3. маршрут по умолчанию через TUN двумя половинами — `0.0.0.0/1` и `128.0.0.0/1`:
+   они перекрывают существующий default, не удаляя его;
+4. `blackhole` для IPv6: мост работает только с IPv4;
+5. системный DNS через `resolvectl` — на адрес TUN. Если `resolvectl` нет, команда
+   **не правит** `/etc/resolv.conf` молча, а предупреждает об утечке DNS (событие
+   `dns_failed`) и продолжает работу.
+
+DNS: перехватываются UDP и TCP на 53-й порт к любому адресу, запрос уходит выбранному
+резолверу как DNS-over-TCP через SOCKS5 (кэша нет). Кандидаты (`--dns`) проверяются
+через цепочку после `ready`, берётся самый быстрый; при смене звена выбор повторяется.
+Всё остальное UDP идёт `--udp=drop`: QUIC (`UDP/443`) отбрасывается молча, чтобы
+приложения откатывались на TCP.
+
+**Чего не будет:** видеозвонков и игр на UDP (проброс UDP не реализован, точка
+расширения — `handleUDP` в `vpn/bridge.go`), любого трафика по IPv6, ICMP-пинга, а
+также сервисов, которым нужен QUIC и которые не умеют откатываться на TCP.
+
+При failover цепочки TUN и маршруты **не снимаются**: новые соединения на секунды
+падают, но трафик не уходит напрямую — это и есть kill switch.
+
+#### Точки адаптации (не реализованы, только контракт)
+
+| Платформа | Устройство пакетов | Маршруты и DNS | Права |
+|---|---|---|---|
+| Linux (сделано) | `vpn/tun_linux.go`: `tun.CreateTUN`, `tun.CreateTUNFromFile` | `vpn/routes_linux.go`: команды `ip` и `resolvectl` | root, проверка до старта |
+| Android | `vpn.DeviceFromFile` (fd отдаёт `VpnService.Builder`) → `vpn.Options.Device` | не нужен: адрес, маршруты и DNS задаёт сам VpnService; `RouteManager` — заглушка со статусом | проверки нет: `vpn.Options.CheckPrivileges` подменяется на пустую |
+| Windows | Wintun (`vpn/tun_windows.go`) | `vpn/routes_windows.go`: `netsh interface ipv4 add route` / `CreateIpForwardEntry`; исключение endpoint — маршрутом `/32` | администратор |
+| macOS | utun (`vpn/tun_darwin.go`) | `vpn/routes_darwin.go`: `route add` и `networksetup -setdnsservers` | root |
+
+Общий контракт один: `vpn.Device` (чтение/запись IP-пакетов, имя, MTU, Close),
+`vpn.RouteManager` (`Apply`/`SetEndpoint`/`Revert`) и `vpn.DialFunc` — мост, политика
+пакетов и выбор DNS от платформы не зависят. Для Android в `vpn.Options` уже есть
+`Device` (готовое устройство из fd) и `Protect(fd)` — на Linux он не нужен (петля
+исключена маршрутом `/32`), а на Android подменяется на `VpnService.protect`.
+Пока реализован только Linux: остальные ОС возвращают `vpn.ErrUnsupported` с
+понятным сообщением.
 
 ### Чек-лист e2e (позже, на свободной машине)
 
@@ -236,6 +314,19 @@ WARPGEN_E2E=1 go test -tags e2e ./core/ -run E2E -v
 | 3 | полный прогон `warpgen run` для NL и SE | страна подтверждена двумя геосервисами (`TestE2ERunReady` с `WARPGEN_E2E_COUNTRY`) |
 | 4 | failover: искусственно оборвать внешний туннель | событие `failover` и пересоздание туннеля с форвардером на следующем endpoint |
 | 5 | чистая остановка по Ctrl+C | нет дочерних процессов (`pgrep -a warp-plus`) и слушающих портов (`ss -lunp \| grep 8086`) |
+| 6 | `sudo warpgen run --tun --dry-run` | печатает план и команды, в системе ничего не меняется (нет `warpgen0`) |
+| 7 | `sudo warpgen run --tun`, затем `ip addr show warpgen0`, `ip route show`, `ip -6 route show blackhole`, `resolvectl status` | TUN поднят (`198.18.0.1/15`, MTU 1400), в системе есть `/32` endpoint мимо TUN, `0.0.0.0/1` и `128.0.0.0/1` через TUN, blackhole `::/0`, DNS указывает на адрес TUN; событие `routes_applied` |
+| 8 | нет утечек DNS: `sudo tcpdump -ni <физический интерфейс> port 53` | запросов по 53-му порту мимо TUN нет |
+| 9 | обычный сайт и `curl` по IP | `curl https://ifconfig.co/json` и `curl http://1.1.1.1/` отвечают, `curl -6` не проходит, `warpgen` переживает это |
+| 10 | поведение при failover | события `failover` и `dns_selected`, маршруты и TUN остаются на месте, трафик не уходит напрямую |
+| 11 | чистый откат после Ctrl+C | `ip route show` без `0.0.0.0/1` и `128.0.0.0/1`, `ip -6 route` без blackhole, `ip link show warpgen0` — нет интерфейса, DNS возвращён |
+| 12 | восстановление после `kill -9` | ручное: `sudo ip route del 0.0.0.0/1 dev warpgen0`, `sudo ip route del 128.0.0.0/1 dev warpgen0`, `sudo ip -6 route del blackhole default`, `sudo resolvectl revert <физический интерфейс>`, `sudo ip link del warpgen0` |
+
+Пункты 6–12 требуют root и меняют сеть машины, поэтому автоматических тестов для них
+в репозитории нет осознанно: прогон такого теста в обычном `go test ./...` (или в CI)
+ломает сеть. Офлайн проверены мост, политика пакетов, DNS и откат команд
+(`vpn/bridge_test.go`, `vpn/routes_linux_test.go`), а автомат пайплайна — на фейках
+(`core/pipeline_test.go`).
 
 ## Тесты
 
@@ -269,6 +360,7 @@ WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run Inte
 - `config/` — генератор `.conf` (WARP-safe AWG 2.0) и генераторы I1 (QUIC/DNS/SIP/STUN)
 - `chain/` — цепочка «внешний AWG-туннель → WARP → Psiphon»: запуск внешнего warp-plus и проверка SOCKS5
 - `core/` — самодостаточный пайплайн `run`: автомат состояний (endpoint → туннель → форвардер → страны → мониторинг), UDP-форвардер, события
+- `vpn/` — системный туннель `--tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и их откат (Linux)
 - `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `gen`, `chain`, `run`)
 
 ## WARP-safe инварианты конфига
@@ -288,9 +380,11 @@ WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run Inte
 | Android | Портирование (Go → нативная библиотека, `-buildmode=c-shared`) |
 | Windows | Портирование |
 
-Платформенный код изолирован build tags: `tunnel/bind_linux.go`, `tunnel/bind_other.go`
+Платформенный код изолирован build tags: `tunnel/bind_linux.go`, `tunnel/bind_other.go`,
+`vpn/tun_linux.go`, `vpn/tun_other.go`, `vpn/routes_linux.go`, `vpn/routes_other.go`
 (и `chain/proc_unix.go`, `chain/proc_windows.go` для управления группой процессов).
-Никаких linux-only syscall'ов вне этих файлов; root не нужен (кроме `--interface`).
+Никаких linux-only syscall'ов вне этих файлов; root не нужен — кроме `--interface`
+и режима `run --tun`.
 
 ## Ограничения
 

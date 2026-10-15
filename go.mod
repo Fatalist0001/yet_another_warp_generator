@@ -7,6 +7,7 @@ require (
 	golang.org/x/crypto v0.53.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
+	gvisor.dev/gvisor v0.0.0-20260616165937-8e4bc62602eb
 )
 
 require (
@@ -20,5 +21,4 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446 // indirect
-	gvisor.dev/gvisor v0.0.0-20260616165937-8e4bc62602eb // indirect
 )

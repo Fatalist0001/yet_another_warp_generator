@@ -13,6 +13,7 @@ import (
 	"github.com/Fatalist0001/yet_another_warp_generator/registration"
 	"github.com/Fatalist0001/yet_another_warp_generator/scanner"
 	"github.com/Fatalist0001/yet_another_warp_generator/tunnel"
+	"github.com/Fatalist0001/yet_another_warp_generator/vpn"
 )
 
 // Options — параметры сборки рабочей конфигурации (уровень CLI).
@@ -43,6 +44,19 @@ type Options struct {
 	ReadyTimeout time.Duration
 	Attempts     int
 	Strict       bool
+
+	// TUN — режим системного туннеля (--tun): весь трафик машины идёт по цепочке
+	// TUN → мост → SOCKS5 → WARP → Cloudflare.
+	TUN bool
+	// TUNName / TUNMTU — имя и MTU TUN-интерфейса.
+	TUNName string
+	TUNMTU  int
+	// DNS — резолверы-кандидаты для DNS через цепочку (ip[:port]).
+	DNS []string
+	// UDP — политика обработки UDP (поддерживается drop).
+	UDP string
+	// DryRun — напечатать системные команды и ничего не менять в системе.
+	DryRun bool
 
 	// Logf — приёмник служебных сообщений (только диагностика).
 	Logf func(format string, args ...any)
@@ -92,7 +106,7 @@ func NewConfig(opts Options) (Config, error) {
 		onProbe = func(done, total int) { logf("\r  проверено %d/%d", done, total) }
 	}
 
-	return Config{
+	cfg := Config{
 		InnerEndpoint:    firstNonEmpty(opts.InnerEndpoint, DefaultInnerEndpoint),
 		Listen:           firstNonEmpty(opts.Listen, DefaultListen),
 		Countries:        append([]string(nil), opts.Countries...),
@@ -112,7 +126,25 @@ func NewConfig(opts Options) (Config, error) {
 		MaxSessions:      opts.MaxSessions,
 		HandshakeTimeout: scanner.DefaultHandshakeTimeout,
 		TraceTimeout:     scanner.DefaultTraceTimeout,
-	}, nil
+	}
+
+	if opts.TUN {
+		// Системный туннель собирается сразу: проверки (права, адрес, политика
+		// UDP, список резолверов) должны провалиться до сетевых действий.
+		sys, err := vpn.New(vpn.Options{
+			TUNName: opts.TUNName,
+			MTU:     opts.TUNMTU,
+			DNS:     opts.DNS,
+			UDP:     vpn.UDPPolicy(opts.UDP),
+			DryRun:  opts.DryRun,
+			Logf:    opts.Logf,
+		})
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.TUN = func() (TUNSystem, error) { return sys, nil }
+	}
+	return cfg, nil
 }
 
 // chainOptions переносит параметры цепочки (endpoint подставляет ChainRunner).

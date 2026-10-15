@@ -20,6 +20,7 @@ import (
 
 	"github.com/Fatalist0001/yet_another_warp_generator/chain"
 	"github.com/Fatalist0001/yet_another_warp_generator/tunnel"
+	"github.com/Fatalist0001/yet_another_warp_generator/vpn"
 )
 
 // Значения по умолчанию.
@@ -112,6 +113,22 @@ type ChainRunner interface {
 	Run(ctx context.Context, req ChainRequest) (*ChainSession, error)
 }
 
+// TUNSystem — системный туннель: TUN-устройство, мост TUN→SOCKS5, маршруты и
+// DNS. Реализуется vpn.SystemTunnel; в тестах — подделкой. nil в Config.TUN
+// означает обычный режим: наружу отдаётся только SOCKS5.
+type TUNSystem interface {
+	// Start поднимает TUN и мост на готовый SOCKS5, применяет маршруты и выбирает
+	// DNS-резолвер. При ошибке сам откатывает применённое.
+	Start(ctx context.Context, socks, endpoint string) (vpn.Status, error)
+	// UpdateSocks переводит мост на новый SOCKS5 после смены цепочки и заново
+	// выбирает DNS. Маршруты и TUN не трогает.
+	UpdateSocks(ctx context.Context, socks string) (vpn.Status, error)
+	// UpdateEndpoint обновляет исключение /32 для нового внешнего endpoint.
+	UpdateEndpoint(ctx context.Context, endpoint string) (vpn.Status, error)
+	// Stop снимает маршруты и DNS, затем останавливает мост и TUN. Идемпотентен.
+	Stop(ctx context.Context) error
+}
+
 // ProbeResult — что увидели геосервисы через SOCKS5.
 type ProbeResult struct {
 	// Country / IP / Org — ответ первого ответившего сервиса.
@@ -165,6 +182,11 @@ type Config struct {
 	Chain   ChainRunner
 	Prober  Prober
 	Clock   Clock
+
+	// TUN — фабрикатор системного туннеля (режим --tun). nil — только SOCKS5.
+	// Вызывается один раз, после первого ready: маршруты применяются только
+	// тогда, когда цепочка уже работает.
+	TUN func() (TUNSystem, error)
 
 	// Preflight — локальные проверки до старта (аккаунт, identity warp-plus,
 	// бинарник warp-plus). Сетевых запросов делать не должен. nil — нет проверок.

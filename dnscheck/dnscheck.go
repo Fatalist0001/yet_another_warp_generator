@@ -7,10 +7,13 @@ package dnscheck
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +30,12 @@ const SlowThreshold = 500 * time.Millisecond
 
 // DefaultTimeout — таймаут одной проверки.
 const DefaultTimeout = 3 * time.Second
+
+// DefaultPort — стандартный порт DNS.
+const DefaultPort = 53
+
+// maxTCPSize — предел длины DNS-сообщения в TCP-фрейме (два байта длины).
+const maxTCPSize = 65535
 
 // Status — итог проверки одного DNS.
 type Status int
@@ -83,6 +92,17 @@ type Result struct {
 type Target struct {
 	Name string
 	IP   string
+	// Port — порт резолвера (0 — стандартный 53).
+	Port int
+}
+
+// addr — адрес резолвера для дозвона (ip:port).
+func (t Target) addr() string {
+	port := t.Port
+	if port == 0 {
+		port = DefaultPort
+	}
+	return net.JoinHostPort(t.IP, strconv.Itoa(port))
 }
 
 // Options — параметры проверки.
@@ -146,7 +166,7 @@ func Check(ctx context.Context, d Dialer, target Target, opts Options) Result {
 	}
 
 	start := time.Now()
-	conn, err := d.DialContext(ctx, "udp", net.JoinHostPort(target.IP, "53"))
+	conn, err := d.DialContext(ctx, "udp", target.addr())
 	if err != nil {
 		r.Status = StatusError
 		r.Err = fmt.Errorf("дозвон до %s: %w", target.IP, err)
@@ -197,6 +217,142 @@ func Check(ctx context.Context, d Dialer, target Target, opts Options) Result {
 		r.Status = StatusOK
 	}
 	return r
+}
+
+// CheckTCP проверяет DNS-over-TCP через переданный дозвонщик: запрос уходит по TCP
+// (два байта длины + сообщение) на резолвер. Так проверяет резолверы системный
+// туннель: через SOCKS5 доступен только TCP, а UDP-запросы к произвольным адресам
+// пересылать нечем.
+func CheckTCP(ctx context.Context, d Dialer, target Target, opts Options) Result {
+	opts = opts.withDefaults()
+	r := Result{Name: target.Name, IP: target.addr()}
+
+	if net.ParseIP(target.IP) == nil {
+		r.Status = StatusError
+		r.Err = fmt.Errorf("%q не является IP", target.IP)
+		return r
+	}
+
+	query, id, err := buildQuery(QueryName)
+	if err != nil {
+		r.Status = StatusError
+		r.Err = err
+		return r
+	}
+
+	timeout := opts.Timeout
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl); left < timeout {
+			timeout = left
+		}
+	}
+	if timeout <= 0 {
+		r.Status = StatusNoAnswer
+		r.Err = context.DeadlineExceeded
+		return r
+	}
+
+	start := time.Now()
+	conn, err := d.DialContext(ctx, "tcp", target.addr())
+	if err != nil {
+		r.Status = StatusError
+		r.Err = fmt.Errorf("дозвон до %s: %w", target.addr(), err)
+		return r
+	}
+	defer conn.Close()
+
+	raw, err := ExchangeTCP(conn, query, timeout)
+	r.RTT = time.Since(start)
+	if err != nil {
+		if isTimeout(err) {
+			r.Status = StatusNoAnswer
+			r.Err = errors.New("таймаут")
+			return r
+		}
+		r.Status = StatusError
+		r.Err = fmt.Errorf("DNS-over-TCP: %w", err)
+		return r
+	}
+
+	answers, err := parseResponse(raw, id)
+	if err != nil {
+		r.Status = StatusNoAnswer
+		r.Err = err
+		return r
+	}
+	if answers == 0 {
+		r.Status = StatusNoAnswer
+		r.Err = errors.New("ответ без адресов")
+		return r
+	}
+	if r.RTT > opts.Slow {
+		r.Status = StatusSlow
+	} else {
+		r.Status = StatusOK
+	}
+	return r
+}
+
+// ExchangeTCP отправляет DNS-запрос по TCP (RFC 1035: два байта длины + сообщение)
+// и читает ответ. Таймаут ставится на весь обмен; он же общий с вызывающей стороной.
+func ExchangeTCP(conn net.Conn, query []byte, timeout time.Duration) ([]byte, error) {
+	switch {
+	case len(query) == 0:
+		return nil, errors.New("пустой DNS-запрос")
+	case len(query) > maxTCPSize:
+		return nil, fmt.Errorf("DNS-запрос длиной %d байт не влезает в TCP-фрейм", len(query))
+	}
+	if timeout > 0 {
+		if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+			return nil, err
+		}
+	}
+
+	frame := make([]byte, 2+len(query))
+	binary.BigEndian.PutUint16(frame, uint16(len(query)))
+	copy(frame[2:], query)
+	if _, err := conn.Write(frame); err != nil {
+		return nil, fmt.Errorf("отправка запроса: %w", err)
+	}
+
+	var head [2]byte
+	if _, err := io.ReadFull(conn, head[:]); err != nil {
+		return nil, fmt.Errorf("чтение длины ответа: %w", err)
+	}
+	size := int(binary.BigEndian.Uint16(head[:]))
+	if size == 0 {
+		return nil, errors.New("пустой ответ DNS")
+	}
+	resp := make([]byte, size)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		return nil, fmt.Errorf("чтение ответа: %w", err)
+	}
+	return resp, nil
+}
+
+// SelectBestTCP проверяет кандидатов через дозвонщик и возвращает лучший по
+// задержке. Результаты всех проверок возвращаются даже при ошибке: они нужны для
+// журнала. Ошибка — ни один резолвер не ответил.
+func SelectBestTCP(ctx context.Context, d Dialer, targets []Target, opts Options) (Target, []Result, error) {
+	opts = opts.withDefaults()
+	results := make([]Result, 0, len(targets))
+	var best Target
+	var bestRTT time.Duration
+
+	for _, t := range targets {
+		if ctx.Err() != nil {
+			break
+		}
+		r := CheckTCP(ctx, d, t, opts)
+		results = append(results, r)
+		if r.Status.OK() && (best.Name == "" || r.RTT < bestRTT) {
+			best, bestRTT = t, r.RTT
+		}
+	}
+	if best.Name == "" {
+		return Target{}, results, fmt.Errorf("ни один DNS не ответил через цепочку (проверено %d)", len(results))
+	}
+	return best, results, nil
 }
 
 // buildQuery собирает DNS-запрос A для указанного имени.

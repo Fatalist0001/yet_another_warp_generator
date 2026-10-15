@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Fatalist0001/yet_another_warp_generator/tunnel"
+	"github.com/Fatalist0001/yet_another_warp_generator/vpn"
 )
 
 // --- поддельный туннель ---
@@ -235,6 +236,117 @@ func (p *fakeProber) Probe(_ context.Context, _ string) (ProbeResult, error) {
 		i = len(p.steps) - 1
 	}
 	return p.steps[i].res, p.steps[i].err
+}
+
+// --- поддельный системный туннель ---
+
+// tunStep — одно обращение к системному туннелю (для проверки порядка).
+type tunStep struct {
+	// call — start / socks / endpoint / stop.
+	call     string
+	socks    string
+	endpoint string
+}
+
+// fakeTUN — поддельный системный туннель: запоминает вызовы и подменяет статусы.
+type fakeTUN struct {
+	// StartErr / StopErr / SocksErr / EndpointErr — ошибки соответствующих вызовов.
+	StartErr    error
+	StopErr     error
+	SocksErr    error
+	EndpointErr error
+	// Status — статус запуска (пустые поля заполняются разумными значениями).
+	Status vpn.Status
+	// FactoryErr — ошибка создания системного туннеля.
+	FactoryErr error
+
+	mu      sync.Mutex
+	steps   []tunStep
+	created int
+	starts  int
+	stops   int
+}
+
+func (f *fakeTUN) factory() func() (TUNSystem, error) {
+	return func() (TUNSystem, error) {
+		f.mu.Lock()
+		f.created++
+		f.mu.Unlock()
+		if f.FactoryErr != nil {
+			return nil, f.FactoryErr
+		}
+		return f, nil
+	}
+}
+
+func (f *fakeTUN) record(step tunStep) {
+	f.mu.Lock()
+	f.steps = append(f.steps, step)
+	f.mu.Unlock()
+}
+
+// steps — журнал вызовов.
+func (f *fakeTUN) calls() []tunStep {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]tunStep(nil), f.steps...)
+}
+
+// counts — сколько раз создавали, запускали и останавливали туннель.
+func (f *fakeTUN) counts() (created, starts, stops int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.created, f.starts, f.stops
+}
+
+// status — статус с заполненными по умолчанию полями.
+func (f *fakeTUN) status() vpn.Status {
+	st := f.Status
+	if st.Name == "" {
+		st.Name, st.MTU = "warpgen0", 1400
+	}
+	if st.Routes == 0 {
+		st.Routes = 9
+	}
+	if st.DNS == "" && st.DNSErr == "" {
+		st.DNS, st.DNSRTT = "1.1.1.1:53", 20*time.Millisecond
+	}
+	return st
+}
+
+func (f *fakeTUN) Start(_ context.Context, socks, endpoint string) (vpn.Status, error) {
+	f.record(tunStep{call: "start", socks: socks, endpoint: endpoint})
+	f.mu.Lock()
+	f.starts++
+	f.mu.Unlock()
+	if f.StartErr != nil {
+		return vpn.Status{}, f.StartErr
+	}
+	return f.status(), nil
+}
+
+func (f *fakeTUN) UpdateSocks(_ context.Context, socks string) (vpn.Status, error) {
+	f.record(tunStep{call: "socks", socks: socks})
+	if f.SocksErr != nil {
+		return vpn.Status{}, f.SocksErr
+	}
+	return f.status(), nil
+}
+
+func (f *fakeTUN) UpdateEndpoint(_ context.Context, endpoint string) (vpn.Status, error) {
+	f.record(tunStep{call: "endpoint", endpoint: endpoint})
+	if f.EndpointErr != nil {
+		return vpn.Status{}, f.EndpointErr
+	}
+	return vpn.Status{Name: "warpgen0"}, nil
+}
+
+func (f *fakeTUN) Stop(context.Context) error {
+	f.record(tunStep{call: "stop"})
+	f.mu.Lock()
+	f.stops++
+	f.mu.Unlock()
+	return f.StopErr
 }
 
 // --- часы ---
