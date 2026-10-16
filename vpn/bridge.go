@@ -218,18 +218,32 @@ func (b *Bridge) Close() error {
 }
 
 // pumpDevice читает пакеты из TUN и отдаёт их политике пакетов.
+//
+// Как и насос стека, один сбой чтения не гасит мост: потеряется один пакет, а
+// не весь системный туннель (предел на совсем неисправное устройство —
+// maxPumpFails).
 func (b *Bridge) pumpDevice() {
 	defer b.wg.Done()
 
 	buf := make([]byte, maxPacket)
+	fails := 0
 	for {
 		n, err := b.dev.Read(buf)
 		if err != nil {
-			if b.ctx.Err() == nil && !b.isClosed() {
-				b.log("мост: чтение TUN: %v", err)
+			if b.ctx.Err() != nil || b.isClosed() {
+				return
 			}
-			return
+			fails++
+			if fails == 1 || fails%100 == 0 {
+				b.log("мост: чтение TUN: %v (сбоев подряд: %d)", err, fails)
+			}
+			if fails >= maxPumpFails {
+				b.log("мост: устройство не отдаёт пакеты — насос TUN остановлен")
+				return
+			}
+			continue
 		}
+		fails = 0
 		if n <= 0 {
 			continue
 		}
@@ -238,9 +252,14 @@ func (b *Bridge) pumpDevice() {
 }
 
 // pumpStack забирает пакеты из стека и пишет их в TUN.
+//
+// Сбой одной записи не гасит насос: иначе первая же ошибка устройства оставляет
+// клиента без ответов, а причина видна только в --debug (см. maxPumpFails —
+// предел на совсем неисправное устройство).
 func (b *Bridge) pumpStack() {
 	defer b.wg.Done()
 
+	fails := 0
 	for {
 		pkt := b.ep.ReadContext(b.ctx)
 		if pkt == nil {
@@ -252,11 +271,20 @@ func (b *Bridge) pumpStack() {
 		view.Release()
 		pkt.DecRef()
 		if err != nil {
-			if b.ctx.Err() == nil && !b.isClosed() {
-				b.log("мост: запись в TUN: %v", err)
+			if b.ctx.Err() != nil || b.isClosed() {
+				return
 			}
-			return
+			fails++
+			if fails == 1 || fails%100 == 0 {
+				b.log("мост: запись в TUN: %v (сбоев подряд: %d)", err, fails)
+			}
+			if fails >= maxPumpFails {
+				b.log("мост: устройство не принимает пакеты — насос стека остановлен")
+				return
+			}
+			continue
 		}
+		fails = 0
 	}
 }
 

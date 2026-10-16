@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"net/netip"
 )
@@ -274,7 +275,10 @@ func parseDefaultRoute(out string) (gw, dev string) {
 	return gw, dev
 }
 
-// applyDNS перенаправляет системный DNS на адрес TUN.
+// applyDNS перенаправляет системный DNS на адрес из подсети TUN. Прежние
+// настройки интерфейса запоминаются, чтобы откат вернул именно их: `resolvectl
+// revert` стирает и то, что выставил NetworkManager, — после него интерфейс
+// остаётся без DNS и сеть работает только после переподключения.
 func (l *linuxRoutes) applyDNS(ctx context.Context, rec *record, plan Plan, physDev string) error {
 	if !plan.DNS.IsValid() {
 		return nil
@@ -287,21 +291,92 @@ func (l *linuxRoutes) applyDNS(ctx context.Context, rec *record, plan Plan, phys
 		rec.warn(msg)
 		return nil
 	}
-	if err := rec.do(ctx, []string{"resolvectl", "dns", physDev, plan.DNS.String()}, nil); err != nil {
+	oldDNS := l.linkDNS(ctx, rec, physDev)
+	oldDomains := l.linkDomains(ctx, rec, physDev)
+
+	argv := []string{"resolvectl", "dns", physDev, plan.DNS.String()}
+	if err := rec.do(ctx, argv, restoreDNSArgs(physDev, oldDNS)); err != nil {
 		return err
 	}
-	// Обе настройки снимаются одним revert, поэтому отмену помним у последней
-	// команды: Revert идёт в обратном порядке.
-	argv := []string{"resolvectl", "domain", physDev, "~."}
-	inverse := []string{"resolvectl", "revert", physDev}
-	return rec.do(ctx, argv, inverse)
+	// Домен ~. уводит в этот интерфейс все запросы: без него systemd-resolved
+	// может отдать запрос другому линку.
+	argv = []string{"resolvectl", "domain", physDev, "~."}
+	return rec.do(ctx, argv, restoreDomainArgs(physDev, oldDomains))
+}
+
+// linkDNS читает DNS-серверы интерфейса — их возвращаем при откате. Ошибка
+// чтения не мешает работе: тогда откат снимет настройку целиком.
+func (l *linuxRoutes) linkDNS(ctx context.Context, rec *record, dev string) []string {
+	out, err := rec.read(ctx, "resolvectl", "dns", dev)
+	if err != nil {
+		return nil
+	}
+	return parseResolvectlList(out)
+}
+
+// linkDomains читает домены маршрутизации интерфейса.
+func (l *linuxRoutes) linkDomains(ctx context.Context, rec *record, dev string) []string {
+	out, err := rec.read(ctx, "resolvectl", "domain", dev)
+	if err != nil {
+		return nil
+	}
+	return parseResolvectlList(out)
+}
+
+// parseResolvectlList достаёт список из вывода `resolvectl dns|domain <линк>`
+// вида «Link 2 (eth0): 10.18.47.44 ~.»: берём всё после двоеточия.
+func parseResolvectlList(out string) []string {
+	line := out
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	i := strings.IndexByte(line, ':')
+	if i < 0 {
+		return nil
+	}
+	var list []string
+	for _, f := range strings.Fields(line[i+1:]) {
+		if f != "" {
+			list = append(list, f)
+		}
+	}
+	return list
+}
+
+// restoreDNSArgs — отмена шага с DNS: возвращаем прежние серверы, а если их не
+// было (или прочитать не удалось) — снимаем настройку интерфейса.
+func restoreDNSArgs(dev string, servers []string) []string {
+	if len(servers) == 0 {
+		return []string{"resolvectl", "revert", dev}
+	}
+	return append([]string{"resolvectl", "dns", dev}, servers...)
+}
+
+// restoreDomainArgs — отмена шага с доменами: прежний список, а если его не было
+// — пустая строка (так resolvectl очищает домены интерфейса, не трогая
+// DNS-серверы; их вернёт отмена предыдущего шага).
+func restoreDomainArgs(dev string, domains []string) []string {
+	if len(domains) == 0 {
+		return []string{"resolvectl", "domain", dev, ""}
+	}
+	return append([]string{"resolvectl", "domain", dev}, domains...)
 }
 
 // osExecutor выполняет команды через os/exec.
 type osExecutor struct{}
 
-func (osExecutor) Output(ctx context.Context, name string, args ...string) (string, error) {
+// command собирает команду в отдельной группе процессов. Без этого Ctrl+C
+// прилетает всей группе терминала и убивает подкоманду на полпути (например,
+// снятие маршрута при остановке прекращалось с «signal: interrupt» — и маршрут
+// оставался в системе). Остановку ведёт сам warpgen: по контексту и StopTimeout.
+func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
+func (osExecutor) Output(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := command(ctx, name, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -312,7 +387,7 @@ func (osExecutor) Output(ctx context.Context, name string, args ...string) (stri
 }
 
 func (osExecutor) Run(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := command(ctx, name, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

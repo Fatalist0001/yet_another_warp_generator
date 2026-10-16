@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -34,6 +36,10 @@ func planFor(endpoints ...string) Plan {
 type fakeExecutor struct {
 	// defaultRoute — вывод `ip route show default`.
 	defaultRoute string
+	// linkDNS — вывод `resolvectl dns <линк>`: прежние серверы интерфейса.
+	linkDNS string
+	// linkDomains — вывод `resolvectl domain <линк>`: прежние домены интерфейса.
+	linkDomains string
 	// failOn — подстрока команды, на которой Run возвращает ошибку.
 	failOn string
 	// resolvectl — есть ли утилита в PATH.
@@ -42,6 +48,8 @@ type fakeExecutor struct {
 	failMsg string
 	// onRun — хук при каждом Run: например, снять снимок файла состояния.
 	onRun func(argv []string)
+	// readErrOn — подстрока команды чтения, на которой Output возвращает ошибку.
+	readErrOn string
 
 	mu   sync.Mutex
 	runs [][]string
@@ -51,7 +59,11 @@ type fakeExecutor struct {
 func newFakeExecutor() *fakeExecutor {
 	return &fakeExecutor{
 		defaultRoute: "default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.100 metric 100\n",
-		resolvectl:   true,
+		// Типовая картина: DNS серверы интерфейсу выставил NetworkManager, своих
+		// доменов маршрутизации у линка нет.
+		linkDNS:     "Link 2 (eth0): 192.168.1.1\n",
+		linkDomains: "Link 2 (eth0):\n",
+		resolvectl:  true,
 	}
 }
 
@@ -61,6 +73,17 @@ func (e *fakeExecutor) Output(_ context.Context, name string, args ...string) (s
 	e.mu.Unlock()
 	if name == "ip" && len(args) >= 2 && args[0] == "route" && args[1] == "show" {
 		return e.defaultRoute, nil
+	}
+	if e.readErrOn != "" && strings.Contains(strings.Join(append([]string{name}, args...), " "), e.readErrOn) {
+		return "", errors.New("чтение не удалось")
+	}
+	if name == "resolvectl" && len(args) == 2 {
+		switch args[0] {
+		case "dns":
+			return e.linkDNS, nil
+		case "domain":
+			return e.linkDomains, nil
+		}
 	}
 	return "", fmt.Errorf("неожиданное чтение: %s %s", name, strings.Join(args, " "))
 }
@@ -125,15 +148,40 @@ func applyCommands() []string {
 
 // revertCommands — ожидаемый откат: обратный порядок, без шагов без отмены.
 func revertCommands() []string {
-	return []string{
-		"resolvectl revert eth0",
+	out := revertDNSCommands("eth0", []string{"192.168.1.1"}, nil)
+	return append(out,
 		"ip -6 route del blackhole default",
 		"ip route del 128.0.0.0/1 dev warpgen0",
 		"ip route del 0.0.0.0/1 dev warpgen0",
 		"ip route del 162.159.192.1/32 via 192.168.1.1 dev eth0",
 		"ip link set dev warpgen0 down",
 		"ip addr del 198.18.0.1/15 dev warpgen0",
+	)
+}
+
+// revertDNSCommands — отмена двух DNS-шагов в порядке отката: сначала домены,
+// потом серверы.
+func revertDNSCommands(dev string, servers, domains []string) []string {
+	return []string{restoreDomainsCmd(dev, domains...), restoreDNSCmd(dev, servers...)}
+}
+
+// restoreDomainsCmd — отмена шага с доменами: пустой аргумент значит «очистить»
+// (так resolvectl снимает список доменов, не трогая DNS-серверы).
+func restoreDomainsCmd(dev string, domains ...string) string {
+	args := append([]string{"resolvectl", "domain", dev}, domains...)
+	if len(domains) == 0 {
+		args = append(args, "")
 	}
+	return strings.Join(args, " ")
+}
+
+// restoreDNSCmd — отмена шага с DNS: прежние серверы, а если их не знали —
+// снятие настройки интерфейса целиком.
+func restoreDNSCmd(dev string, servers ...string) string {
+	if len(servers) == 0 {
+		return strings.Join([]string{"resolvectl", "revert", dev}, " ")
+	}
+	return strings.Join(append([]string{"resolvectl", "dns", dev}, servers...), " ")
 }
 
 func newTestRoutes(t *testing.T, exec Executor, dryRun bool) RouteManager {
@@ -183,7 +231,9 @@ func TestRouteManagerApplyAndRevert(t *testing.T) {
 	if err := equalCommands(exec.executed(), applyCommands()); err != nil {
 		t.Errorf("применение: %v", err)
 	}
-	if reads := exec.reads(); len(reads) != 1 || reads[0] != "ip route show default" {
+	// Чтения: физический маршрут и прежние настройки DNS интерфейса (их вернёт откат).
+	wantReads := []string{"ip route show default", "resolvectl dns eth0", "resolvectl domain eth0"}
+	if reads := exec.reads(); len(reads) != len(wantReads) || reads[0] != wantReads[0] || reads[1] != wantReads[1] || reads[2] != wantReads[2] {
 		t.Errorf("чтения: %v", reads)
 	}
 
@@ -330,9 +380,87 @@ func TestRouteManagerDryRun(t *testing.T) {
 	if len(exec.executed()) != 0 {
 		t.Errorf("dry-run выполнил команды: %v", exec.executed())
 	}
-	// Чтение маршрута по умолчанию в dry-run допустимо: оно ничего не меняет.
-	if reads := exec.reads(); len(reads) != 1 {
-		t.Errorf("чтений %d, ожидали 1", len(reads))
+	// Чтение маршрута по умолчанию и настроек DNS в dry-run допустимо: оно
+	// ничего не меняет, а команды печатаются с реальными прежними значениями.
+	if reads := exec.reads(); len(reads) != 3 {
+		t.Errorf("чтений %d, ожидали 3", len(reads))
+	}
+}
+
+// Откат возвращает прежние настройки DNS интерфейса, а не стирает их: у
+// NetworkManager они единственный источник резолверов, и после `resolvectl
+// revert` линк остаётся без DNS до переподключения (сеть «сломана»).
+func TestRouteManagerRestoresLinkDNS(t *testing.T) {
+	cases := []struct {
+		name        string
+		linkDNS     string
+		linkDomains string
+		readErrOn   string
+		servers     []string
+		domains     []string
+	}{
+		{
+			name:        "серверы и домены NetworkManager",
+			linkDNS:     "Link 2 (eth0): 10.18.47.44 1.1.1.1\n",
+			linkDomains: "Link 2 (eth0): ~corp.example\n",
+			servers:     []string{"10.18.47.44", "1.1.1.1"},
+			domains:     []string{"~corp.example"},
+		},
+		{
+			name:        "прежних серверов и доменов нет",
+			linkDNS:     "Link 2 (eth0):\n",
+			linkDomains: "Link 2 (eth0):\n",
+		},
+		{
+			name:      "прежние настройки прочитать не удалось",
+			readErrOn: "resolvectl dns eth0",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			exec := newFakeExecutor()
+			exec.readErrOn = c.readErrOn
+			if c.linkDNS != "" {
+				exec.linkDNS = c.linkDNS
+			}
+			if c.linkDomains != "" {
+				exec.linkDomains = c.linkDomains
+			}
+			rm := newTestRoutes(t, exec, false)
+			if _, err := rm.Apply(context.Background(), planFor("162.159.192.1")); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if err := rm.Revert(context.Background()); err != nil {
+				t.Fatalf("Revert: %v", err)
+			}
+			want := append(revertDNSCommands("eth0", c.servers, c.domains), revertCommands()[2:]...)
+			if err := equalCommands(exec.executed(), append(applyCommands(), want...)); err != nil {
+				t.Errorf("откат DNS: %v", err)
+			}
+		})
+	}
+}
+
+// Подкоманды идут в своей группе процессов: иначе Ctrl+C прилетает всей группе
+// терминала и обрывает команду на полпути — в e2e-прогоне так оставался висеть
+// маршрут /32 внешнего endpoint («ip: signal: interrupt»).
+func TestOSExecutorOwnProcessGroup(t *testing.T) {
+	var e osExecutor
+	// Пятое поле /proc/<pid>/stat — идентификатор группы процессов.
+	out, err := e.Output(context.Background(), "sh", "-c", `read -r _ _ _ _ pgrp _ < /proc/self/stat; echo "$pgrp"`)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	pgid, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		t.Fatalf("группа процессов %q: %v", out, err)
+	}
+	our, err := syscall.Getpgid(os.Getpid())
+	if err != nil {
+		t.Fatalf("своя группа процессов: %v", err)
+	}
+	if pgid == our {
+		t.Errorf("подкоманда в группе warpgen (pgid %d): Ctrl+C прервёт её на полпути", pgid)
 	}
 }
 

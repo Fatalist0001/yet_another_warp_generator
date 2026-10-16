@@ -29,6 +29,9 @@ docs/*.md
 /warpgen-debug
 coverage.out
 
+# Релизный бинарник warp-plus (20 МБ), который warpgen ищет рядом с собой
+/warp-plus
+
 # --- ОС и редакторы ---
 
 .DS_Store

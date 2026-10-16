@@ -64,8 +64,11 @@ func runRun(args []string) error {
 		codes[i] = strings.ToUpper(codes[i])
 	}
 
+	// Служебный вывод: --debug включает его целиком, а --dry-run — потому что его
+	// обещанный вывод и есть системные команды. Печатается в stderr, поэтому поток
+	// stdout остаётся чистым даже в --json.
 	var logf func(format string, args ...any)
-	if *debug {
+	if *debug || *dryRun {
 		logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
 	}
 
