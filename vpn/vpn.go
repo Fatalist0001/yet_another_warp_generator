@@ -127,6 +127,9 @@ type Options struct {
 	// CheckPrivileges — проверка прав (nil — платформенная: на Linux нужен root).
 	// Точка адаптации: на Android права даёт VpnService, проверка не нужна.
 	CheckPrivileges func() error
+	// StateDir — каталог файлов состояния маршрутов для аварийного отката
+	// (пусто — ~/.warpgen/state; в тестах — подкаталог).
+	StateDir string
 	// Logf — приёмник служебных сообщений (nil — молча).
 	Logf func(format string, args ...any)
 }

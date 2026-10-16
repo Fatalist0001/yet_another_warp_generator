@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -26,7 +27,12 @@ func newRouteManager(opts Options) (RouteManager, error) {
 	if exec == nil {
 		exec = osExecutor{}
 	}
-	return &linuxRoutes{exec: exec, logf: opts.Logf, dryRun: opts.DryRun}, nil
+	return &linuxRoutes{
+		exec:     exec,
+		logf:     opts.Logf,
+		dryRun:   opts.DryRun,
+		stateDir: opts.StateDir,
+	}, nil
 }
 
 // linuxRoutes меняет маршруты, адрес TUN, IPv6-политику и системный DNS.
@@ -36,6 +42,9 @@ type linuxRoutes struct {
 	dryRun bool
 
 	rec *record
+	// stateDir — каталог файлов состояния для аварийного отката (пусто —
+	// ~/.warpgen/state).
+	stateDir string
 	// gateway / device — физический маршрут по умолчанию: через него трафик к
 	// внешнему endpoint идёт мимо TUN.
 	gateway string
@@ -50,7 +59,16 @@ func (l *linuxRoutes) Apply(ctx context.Context, plan Plan) (ApplyResult, error)
 	if l.rec != nil {
 		return ApplyResult{}, errors.New("vpn: маршруты уже применены")
 	}
-	rec := &record{exec: l.exec, logf: l.logf, dryRun: l.dryRun}
+	rec := &record{exec: l.exec, logf: l.logf, dryRun: l.dryRun, tolerate: linuxTolerate}
+	if !l.dryRun {
+		// Путь к состоянию готовим до первой команды: страховка пишется после
+		// каждого шага, и kill -9 посреди Apply тоже оставит журнал отката.
+		path, err := statePath(l.stateDir, plan.TUNName)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		rec.stateFile = path
+	}
 	if err := l.apply(ctx, rec, plan); err != nil {
 		if rerr := rec.revert(ctx); rerr != nil {
 			return ApplyResult{}, errors.Join(err, rerr)
@@ -98,6 +116,62 @@ func (l *linuxRoutes) Revert(ctx context.Context) error {
 	l.rec = nil
 	l.hasEndpoint = false
 	return rec.revert(ctx)
+}
+
+// RevertTunState — аварийный откат по файлу состояния (команда `tun-revert`).
+// Читает журнал применённых команд и выполняет их отмену в обратном порядке:
+// полностью откаченное состояние удаляется, невыполненные отмены остаются в
+// файле, чтобы повторный запуск продолжил с места сбоя. Возвращает, сколько
+// шагов было в файле. opts.DryRun — только напечатать команды; opts.Executor —
+// подмена исполнителя в тестах.
+func RevertTunState(ctx context.Context, opts Options) (int, error) {
+	opts = opts.withDefaults()
+	path, err := statePath(opts.StateDir, opts.TUNName)
+	if err != nil {
+		return 0, err
+	}
+	steps, err := loadState(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, fmt.Errorf("vpn: файла состояния нет (%s): туннель не запускался либо откат уже сделан", path)
+		}
+		return 0, err
+	}
+	if len(steps) == 0 {
+		return 0, fmt.Errorf("vpn: в файле состояния %s нет шагов — откатывать нечего", path)
+	}
+	exec := opts.Executor
+	if exec == nil {
+		exec = osExecutor{}
+	}
+	rec := &record{
+		exec:      exec,
+		logf:      opts.Logf,
+		dryRun:    opts.DryRun,
+		stateFile: path,
+		steps:     steps,
+		tolerate:  linuxTolerate,
+	}
+	return len(steps), rec.revert(ctx)
+}
+
+// linuxTolerate — отмена не нужна, если цели уже нет: после kill -9 TUN
+// уничтожается вместе с процессом, ядро само снимает маршруты через него, и
+// удалённые маршруты/интерфейсы отменять нечего. Без этого журнала файл
+// состояния никогда не очистился бы в самом частом сценарии аварии.
+func linuxTolerate(_ []string, err error) bool {
+	msg := err.Error()
+	for _, marker := range []string{
+		"Cannot find device",
+		"No such device",
+		"No such process",       // ip: маршрута уже нет
+		"No such link is known", // resolvectl: интерфейса уже нет
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // apply — последовательность шагов: адрес и MTU TUN → физический маршрут →

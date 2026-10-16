@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +38,10 @@ type fakeExecutor struct {
 	failOn string
 	// resolvectl — есть ли утилита в PATH.
 	resolvectl bool
+	// failMsg — текст ошибки на failOn (по умолчанию «команда упала»).
+	failMsg string
+	// onRun — хук при каждом Run: например, снять снимок файла состояния.
+	onRun func(argv []string)
 
 	mu   sync.Mutex
 	runs [][]string
@@ -64,9 +69,17 @@ func (e *fakeExecutor) Run(_ context.Context, name string, args ...string) error
 	argv := append([]string{name}, args...)
 	e.mu.Lock()
 	e.runs = append(e.runs, argv)
+	hook := e.onRun
 	e.mu.Unlock()
+	if hook != nil {
+		hook(argv)
+	}
 	if e.failOn != "" && strings.Contains(strings.Join(argv, " "), e.failOn) {
-		return errors.New("команда упала")
+		msg := e.failMsg
+		if msg == "" {
+			msg = "команда упала"
+		}
+		return errors.New(msg)
 	}
 	return nil
 }
@@ -125,7 +138,14 @@ func revertCommands() []string {
 
 func newTestRoutes(t *testing.T, exec Executor, dryRun bool) RouteManager {
 	t.Helper()
-	rm, err := newRouteManager(Options{Executor: exec, DryRun: dryRun})
+	return newTestRoutesDir(t, exec, dryRun, t.TempDir())
+}
+
+// newTestRoutesDir — RouteManager с явным каталогом состояния: в тестах он
+// временный, чтобы проверка страховки не трогала реальный ~/.warpgen.
+func newTestRoutesDir(t *testing.T, exec Executor, dryRun bool, dir string) RouteManager {
+	t.Helper()
+	rm, err := newRouteManager(Options{Executor: exec, DryRun: dryRun, StateDir: dir})
 	if err != nil {
 		t.Fatalf("newRouteManager: %v", err)
 	}
@@ -376,4 +396,203 @@ func TestParseDefaultRoute(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- аварийная страховка: файл состояния ---
+
+// kill -9 посреди Apply: на момент падающей команды журнал уже содержит
+// применённые шаги, а после отката Apply файл удалён.
+func TestRouteManagerStateFileDuringApply(t *testing.T) {
+	dir := t.TempDir()
+	path, err := statePath(dir, "warpgen0")
+	if err != nil {
+		t.Fatalf("statePath: %v", err)
+	}
+	exec := newFakeExecutor()
+	exec.failOn = "ip route replace 0.0.0.0/1"
+	var snap []step
+	exec.onRun = func(argv []string) {
+		if snap != nil || !strings.Contains(strings.Join(argv, " "), "ip route replace 0.0.0.0/1") {
+			return
+		}
+		steps, err := loadState(path)
+		if err != nil {
+			t.Errorf("чтение состояния на момент падения: %v", err)
+			return
+		}
+		snap = steps
+	}
+	rm := newTestRoutesDir(t, exec, false, dir)
+	if _, err := rm.Apply(context.Background(), planFor("162.159.192.1")); err == nil {
+		t.Fatal("ожидали ошибку применения")
+	}
+	// До упавшей команды успели примениться четыре шага: mtu, адрес, подъём, /32.
+	if len(snap) != 4 {
+		t.Fatalf("на момент падения в журнале %d шагов, ожидали 4: %v", len(snap), snap)
+	}
+	// Apply сам откатился и удалил журнал.
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("после отката файл состояния остался: %v", err)
+	}
+}
+
+// Авария (kill -9): процесс убит, знаний из памяти нет. Команда tun-revert
+// откатывает по журналу ровно те команды, что успели примениться.
+func TestRevertTunStateAfterCrash(t *testing.T) {
+	dir := t.TempDir()
+	path, err := statePath(dir, "warpgen0")
+	if err != nil {
+		t.Fatalf("statePath: %v", err)
+	}
+	exec := newFakeExecutor()
+	rm := newTestRoutesDir(t, exec, false, dir)
+	if _, err := rm.Apply(context.Background(), planFor("162.159.192.1")); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// «Процесс убит»: новый исполнитель, состояние только в файле.
+	exec2 := newFakeExecutor()
+	n, err := RevertTunState(context.Background(), Options{
+		StateDir: dir,
+		TUNName:  "warpgen0",
+		Executor: exec2,
+	})
+	if err != nil {
+		t.Fatalf("RevertTunState: %v", err)
+	}
+	if n != len(applyCommands()) {
+		t.Errorf("шагов %d, ожидали %d", n, len(applyCommands()))
+	}
+	if err := equalCommands(exec2.executed(), revertCommands()); err != nil {
+		t.Errorf("откат по журналу: %v", err)
+	}
+	// Журнал очищен, повтор честно сообщает, что откатывать нечего.
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("после отката журнал не удалён: %v", err)
+	}
+	if _, err := RevertTunState(context.Background(), Options{StateDir: dir, TUNName: "warpgen0", Executor: newFakeExecutor()}); err == nil || !strings.Contains(err.Error(), "файла состояния") {
+		t.Errorf("повторный откат: err = %v", err)
+	}
+}
+
+// Частично неудачный откат: в журнале остаются только невыполненные отмены,
+// повтор продолжает с места сбоя, а не начинает сначала.
+func TestRevertTunStatePartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	path, err := statePath(dir, "warpgen0")
+	if err != nil {
+		t.Fatalf("statePath: %v", err)
+	}
+	exec := newFakeExecutor()
+	rm := newTestRoutesDir(t, exec, false, dir)
+	if _, err := rm.Apply(context.Background(), planFor("162.159.192.1")); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	exec.failOn = "ip route del 128.0.0.0/1"
+	if err := rm.Revert(context.Background()); err == nil {
+		t.Fatal("ожидали ошибку отката")
+	}
+	steps, err := loadState(path)
+	if err != nil {
+		t.Fatalf("чтение журнала: %v", err)
+	}
+	// В журнале — исходный шаг с его отменой: упавшая отмена осталась одна.
+	if len(steps) != 1 || strings.Join(steps[0].inverse, " ") != "ip route del 128.0.0.0/1 dev warpgen0" {
+		t.Fatalf("после частичного отката в журнале %v, ожидали один упавший шаг", steps)
+	}
+
+	// Повтор доделывает ровно недоделанное.
+	exec2 := newFakeExecutor()
+	if _, err := RevertTunState(context.Background(), Options{StateDir: dir, TUNName: "warpgen0", Executor: exec2}); err != nil {
+		t.Fatalf("повторный откат: %v", err)
+	}
+	if err := equalCommands(exec2.executed(), []string{"ip route del 128.0.0.0/1 dev warpgen0"}); err != nil {
+		t.Errorf("повтор: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("после доделки журнал не удалён: %v", err)
+	}
+}
+
+// Интерфейс уже уничтожен (kill -9 убивает TUN, ядро само снимает маршруты
+// через него): такие ошибки отмены — не сбой, журнал должен очиститься.
+func TestRevertTunStateToleratesGoneDevice(t *testing.T) {
+	dir := t.TempDir()
+	path, err := statePath(dir, "warpgen0")
+	if err != nil {
+		t.Fatalf("statePath: %v", err)
+	}
+	exec := newFakeExecutor()
+	rm := newTestRoutesDir(t, exec, false, dir)
+	if _, err := rm.Apply(context.Background(), planFor("162.159.192.1")); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	// Все шаги через warpgen0 уже исчезли вместе с интерфейсом.
+	exec.failOn = "dev warpgen0"
+	exec.failMsg = "RTNETLINK answers: Cannot find device \"warpgen0\""
+	if err := rm.Revert(context.Background()); err != nil {
+		t.Fatalf("откат с исчезнувшим интерфейсом: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("журнал не удалён: %v", err)
+	}
+}
+
+// dry-run аварийного отката: команды печатаются, ничего не выполняется,
+// журнал не трогается.
+func TestRevertTunStateDryRun(t *testing.T) {
+	dir := t.TempDir()
+	exec := newFakeExecutor()
+	rm := newTestRoutesDir(t, exec, false, dir)
+	if _, err := rm.Apply(context.Background(), planFor("162.159.192.1")); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	exec2 := newFakeExecutor()
+	var printed []string
+	n, err := RevertTunState(context.Background(), Options{
+		StateDir: dir,
+		TUNName:  "warpgen0",
+		Executor: exec2,
+		DryRun:   true,
+		Logf:     func(format string, args ...any) { printed = append(printed, fmt.Sprintf(format, args...)) },
+	})
+	if err != nil {
+		t.Fatalf("RevertTunState dry-run: %v", err)
+	}
+	if n != len(applyCommands()) {
+		t.Errorf("шагов %d, ожидали %d", n, len(applyCommands()))
+	}
+	if got := exec2.executed(); len(got) != 0 {
+		t.Errorf("dry-run выполнил команды: %v", got)
+	}
+	joined := strings.Join(printed, "\n")
+	for _, want := range revertCommands() {
+		if !strings.Contains(joined, want) {
+			t.Errorf("в dry-run не напечатано: %s", want)
+		}
+	}
+	if _, err := loadState(mustStatePath(t, dir)); err != nil {
+		t.Errorf("журнал исчез при dry-run: %v", err)
+	}
+}
+
+// Без файла состояния — понятная ошибка, ни одна команда не выполняется.
+func TestRevertTunStateNoFile(t *testing.T) {
+	exec := newFakeExecutor()
+	_, err := RevertTunState(context.Background(), Options{StateDir: t.TempDir(), TUNName: "warpgen0", Executor: exec})
+	if err == nil || !strings.Contains(err.Error(), "файла состояния") {
+		t.Errorf("err = %v", err)
+	}
+	if got := exec.executed(); len(got) != 0 {
+		t.Errorf("выполнены команды: %v", got)
+	}
+}
+
+func mustStatePath(t *testing.T, dir string) string {
+	t.Helper()
+	p, err := statePath(dir, "warpgen0")
+	if err != nil {
+		t.Fatalf("statePath: %v", err)
+	}
+	return p
 }

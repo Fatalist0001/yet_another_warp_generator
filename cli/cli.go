@@ -49,6 +49,8 @@ func Run(args []string) error {
 		return runChain(args[1:])
 	case "run":
 		return runRun(args[1:])
+	case "tun-revert":
+		return runTunRevert(args[1:])
 	default:
 		return fmt.Errorf("неизвестная команда: %s (используйте help)", command)
 	}
@@ -549,6 +551,7 @@ func printUsage() {
   gen        Сгенерировать .conf для AmneziaWG
   chain      Запустить warp-plus (WARP → Psiphon) поверх внешнего AWG-туннеля
   run        Поднять туннель внутри процесса и отдать SOCKS5 (без root и TUN)
+  tun-revert Откатить маршруты и DNS по файлу состояния после аварии (kill -9)
   version    Версия утилиты
   help       Показать эту справку
 
