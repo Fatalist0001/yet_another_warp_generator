@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"runtime"
 	"strings"
@@ -109,7 +110,11 @@ func TestRunTunStartsAfterReady(t *testing.T) {
 func TestRunTunKeepsRoutesOnFailover(t *testing.T) {
 	fleet, loc, _, _ := happyPath(t)
 	ch := &fakeChain{steps: []chainStep{{}, {}}}
+	// RU виден три проверки подряд (RUFailures по умолчанию): только после этого
+	// меняем страну, одиночные ответы RU не считаются сбоем.
 	pr := &fakeProber{steps: []probeStep{
+		{res: ProbeResult{Country: "RU", IP: "95.1.2.3", Services: 2, RU: true}},
+		{res: ProbeResult{Country: "RU", IP: "95.1.2.3", Services: 2, RU: true}},
 		{res: ProbeResult{Country: "RU", IP: "95.1.2.3", Services: 2, RU: true}},
 		{res: healthyProbe()},
 	}}
@@ -147,8 +152,10 @@ func TestRunTunKeepsRoutesOnFailover(t *testing.T) {
 
 // Смена внешнего endpoint обновляет исключение /32 и переводит мост на новый SOCKS.
 func TestRunTunUpdatesExclusionOnEndpointChange(t *testing.T) {
+	// TraceFailures по умолчанию = 3: мёртвым туннель считается только после
+	// трёх неудачных проверок подряд (вызовы 2–4), дальше снова работает.
 	fleet := &tunnelFleet{TraceFn: func(call int) (tunnel.TraceResult, error) {
-		if call == 1 || call == 3 {
+		if call == 1 || call >= 5 {
 			return traceOK(), nil
 		}
 		return tunnel.TraceResult{}, errors.New("таймаут")
@@ -436,14 +443,13 @@ func TestRunStopsWhenAllEndpointsFail(t *testing.T) {
 	}
 }
 
-// RU на выходе через SOCKS5 — сразу меняем страну.
+// RU на выходе через SOCKS5 меняет страну только после RUFailures проверок
+// подряд: одиночные ответы RU — это просадка, а не сломанное звено.
 func TestRunMonitorFailsOverOnRU(t *testing.T) {
 	fleet, loc, _, _ := happyPath(t)
 	ch := &fakeChain{steps: []chainStep{{}, {}}}
-	pr := &fakeProber{steps: []probeStep{
-		{res: ProbeResult{Country: "RU", IP: "95.1.2.3", Services: 2, RU: true}},
-		{res: healthyProbe()},
-	}}
+	ru := ProbeResult{Country: "RU", IP: "95.1.2.3", Services: 2, RU: true}
+	pr := &fakeProber{steps: []probeStep{{res: ru}, {res: ru}, {res: ru}, {res: healthyProbe()}}}
 	cfg := testConfig(fleet, loc, ch, pr)
 	cfg.Countries = []string{"NL", "SE"}
 	events, cancel := startRun(t, cfg)
@@ -453,7 +459,13 @@ func TestRunMonitorFailsOverOnRU(t *testing.T) {
 	if ready.Country != "NL" {
 		t.Errorf("первая страна = %q, ожидали NL", ready.Country)
 	}
-	fail := nextUntil(t, events, EventFailover, "выход RU")
+	for want := 1; want <= 3; want++ {
+		ev := nextUntil(t, events, EventDegraded, "выход RU")
+		if ev.Fails != want || !strings.Contains(ev.Reason, "RU") {
+			t.Errorf("просадка %d = %+v", want, ev)
+		}
+	}
+	fail := nextUntil(t, events, EventFailover, "смена страны после RU")
 	if !strings.Contains(fail.Reason, "RU") {
 		t.Errorf("причина = %q, ожидали упоминание RU", fail.Reason)
 	}
@@ -469,11 +481,81 @@ func TestRunMonitorFailsOverOnRU(t *testing.T) {
 	}
 }
 
-// Три сбоя мониторинга подряд — смена страны; первые два дают degraded.
+// Одиночный (или парный) замер RU не меняет звено: мониторинг инерционный.
+func TestRunMonitorSingleRUDoesNotFailover(t *testing.T) {
+	fleet, loc, _, _ := happyPath(t)
+	ch := &fakeChain{}
+	ru := ProbeResult{Country: "RU", IP: "95.1.2.3", Services: 2, RU: true}
+	pr := &fakeProber{steps: []probeStep{{res: ru}, {res: healthyProbe()}}}
+	cfg := testConfig(fleet, loc, ch, pr)
+	cfg.Countries = []string{"NL", "SE"}
+	events, cancel := startRun(t, cfg)
+
+	nextUntil(t, events, EventReady, "готовность")
+	// Ждём, пока мониторинг сделает заметно больше проверок, чем порог.
+	deadline := time.Now().Add(2 * time.Second)
+	for pr.count() < DefaultRUFailures+3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+
+	for _, ev := range drain(t, events) {
+		if ev.Kind == EventFailover || ev.Kind == EventReady {
+			t.Errorf("одиночный RU не должен менять звено: %+v", ev)
+		}
+	}
+	if calls, _, _ := ch.counts(); calls != 1 {
+		t.Errorf("цепочка запускалась %d раз, ожидали один", calls)
+	}
+}
+
+// Геосервисы молчат, но связь через SOCKS5 жива (Prober вернул пустой
+// результат без ошибки) — звено не меняем, только сообщаем «выход не проверен».
+func TestRunMonitorGeoSilentDoesNotFailover(t *testing.T) {
+	fleet, loc, _, _ := happyPath(t)
+	ch := &fakeChain{}
+	pr := &fakeProber{steps: []probeStep{{res: ProbeResult{}}}} // Services=0, без ошибки
+	cfg := testConfig(fleet, loc, ch, pr)
+	cfg.Countries = []string{"NL", "SE"}
+	events, cancel := startRun(t, cfg)
+
+	nextUntil(t, events, EventReady, "готовность")
+	saw := false
+	deadline := time.Now().Add(2 * time.Second)
+	for pr.count() < DefaultMonitorFailures+2 && time.Now().Before(deadline) {
+		select {
+		case ev := <-events:
+			if ev.Kind == EventDegraded {
+				saw = true
+				if !strings.Contains(ev.Reason, "не проверен") {
+					t.Errorf("причина degraded = %q", ev.Reason)
+				}
+			}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+
+	if !saw {
+		t.Error("ожидали событие degraded о непроверенном выходе")
+	}
+	for _, ev := range drain(t, events) {
+		if ev.Kind == EventFailover || ev.Kind == EventReady {
+			t.Errorf("молчание геосервисов не должно менять звено: %+v", ev)
+		}
+	}
+	if calls, _, _ := ch.counts(); calls != 1 {
+		t.Errorf("цепочка запускалась %d раз, ожидали один", calls)
+	}
+}
+
+// MonitorFailures сбоев подряд — смена страны; предыдущие дают degraded.
 func TestRunMonitorDegradedThenFailover(t *testing.T) {
 	fleet, loc, _, _ := happyPath(t)
 	ch := &fakeChain{steps: []chainStep{{}, {}}}
 	pr := &fakeProber{steps: []probeStep{
+		{err: errors.New("нет ответа")},
+		{err: errors.New("нет ответа")},
 		{err: errors.New("нет ответа")},
 		{err: errors.New("нет ответа")},
 		{err: errors.New("нет ответа")},
@@ -485,15 +567,15 @@ func TestRunMonitorDegradedThenFailover(t *testing.T) {
 	defer cancel()
 
 	nextUntil(t, events, EventReady, "первая готовность")
-	for want := 1; want <= 3; want++ {
+	for want := 1; want <= DefaultMonitorFailures; want++ {
 		ev := nextUntil(t, events, EventDegraded, "просадка")
 		if ev.Fails != want {
 			t.Errorf("сбой номер = %d, ожидали %d", ev.Fails, want)
 		}
 	}
 	fail := nextUntil(t, events, EventFailover, "смена страны по сбоям")
-	if !strings.Contains(fail.Reason, "3 сбоя") {
-		t.Errorf("причина = %q, ожидали «3 сбоя»", fail.Reason)
+	if !strings.Contains(fail.Reason, fmt.Sprintf("%d сбоя", DefaultMonitorFailures)) {
+		t.Errorf("причина = %q, ожидали «%d сбоя»", fail.Reason, DefaultMonitorFailures)
 	}
 	if next := nextUntil(t, events, EventReady, "готовность после сбоев"); next.Country != "SE" {
 		t.Errorf("страна = %q, ожидали SE", next.Country)
@@ -504,9 +586,10 @@ func TestRunMonitorDegradedThenFailover(t *testing.T) {
 }
 
 // Внешний туннель перестал отвечать — пересоздаём его и форвардер на следующем endpoint.
+// Туннель считается мёртвым только после TraceFailures неудачных проверок подряд.
 func TestRunRecreatesOuterTunnel(t *testing.T) {
 	fleet := &tunnelFleet{TraceFn: func(call int) (tunnel.TraceResult, error) {
-		if call == 1 || call == 3 {
+		if call == 1 || call >= 1+DefaultTraceFailures+1 {
 			return traceOK(), nil
 		}
 		return tunnel.TraceResult{}, errors.New("таймаут")
@@ -823,7 +906,7 @@ func TestRunWarpOnlyRecreatesTunnelOnProbeFailures(t *testing.T) {
 	defer cancel()
 
 	nextUntil(t, events, EventReady, "готовность")
-	for want := 1; want <= 3; want++ {
+	for want := 1; want <= DefaultMonitorFailures; want++ {
 		ev := nextUntil(t, events, EventDegraded, "просадка")
 		if ev.Fails != want {
 			t.Errorf("сбой номер = %d, ожидали %d", ev.Fails, want)

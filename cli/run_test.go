@@ -47,7 +47,10 @@ func TestRunHelpWorks(t *testing.T) {
 			t.Errorf("run --help: %v", err)
 		}
 	})
-	for _, flag := range []string{"-countries", "-endpoints", "-bind", "-warp-plus", "-cache-dir", "-json", "-listen", "-warp-only"} {
+	for _, flag := range []string{
+		"-countries", "-endpoints", "-bind", "-warp-plus", "-cache-dir", "-json", "-listen", "-warp-only",
+		"-monitor-interval", "-monitor-failures", "-trace-failures", "-ru-failures", "-retry-pause",
+	} {
 		if !strings.Contains(stdout, flag) {
 			t.Errorf("в справке нет флага %s:\n%s", flag, stdout)
 		}

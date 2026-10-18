@@ -368,14 +368,23 @@ const (
 )
 
 // monitor следит за живой цепочкой: раз в MonitorInterval проверяет внешний
-// туннель (trace изнутри) и выход через SOCKS5. Выход RU меняет звено сразу (кроме
-// режима Direct, где RU — ожидаемый выход), прочие сбои — после MonitorFailures
-// подряд.
+// туннель (trace изнутри) и выход через SOCKS5.
+//
+// Переключение намеренно инерционное: одиночная просадка сети или один неудачный
+// ответ геосервиса не должны рвать работающую цепочку (с TUN это выглядит как
+// обрыв интернета у пользователя). Счётчики независимы и сбрасываются первым
+// успехом:
+//   - TraceFailures подряд — мёртвый внешний туннель (следующий endpoint);
+//   - RUFailures подряд — выход RU в Psiphon-режиме (следующая страна; в режиме
+//     Direct RU — норма);
+//   - MonitorFailures подряд — нет выхода через SOCKS5 (следующая страна, а в
+//     режиме Direct — следующий endpoint). Молчание геосервисов при живой
+//     связи — не сбой: Prober проверяет это отдельным запросом.
 func (r *runner) monitor(ctx context.Context, tn Tunnel, sess *ChainSession) outcome {
 	ticker, stop := r.clock.Ticker(r.cfg.MonitorInterval)
 	defer stop()
 
-	fails := 0
+	var traceFails, ruFails, probeFails int
 	for {
 		select {
 		case <-ctx.Done():
@@ -391,13 +400,18 @@ func (r *runner) monitor(ctx context.Context, tn Tunnel, sess *ChainSession) out
 			if ctx.Err() != nil {
 				return outcomeStop
 			}
-			r.failover("внешний туннель перестал отвечать: " + err.Error())
-			return outcomeNextEndpoint
+			if out, done := r.traceFailed(sess, &traceFails, firstLine(err.Error())); done {
+				return out
+			}
+			continue
 		}
 		if reason := traceProblem(tr); reason != "" {
-			r.failover(reason)
-			return outcomeNextEndpoint
+			if out, done := r.traceFailed(sess, &traceFails, reason); done {
+				return out
+			}
+			continue
 		}
+		traceFails = 0
 
 		if r.cfg.Prober == nil {
 			continue
@@ -409,25 +423,53 @@ func (r *runner) monitor(ctx context.Context, tn Tunnel, sess *ChainSession) out
 		// В режиме Direct выход RU — норма (Cloudflare назначает его по
 		// геолокации клиента), менять страну нельзя: проверяем только связь.
 		if res.RU && !r.cfg.Direct {
-			r.failover(fmt.Sprintf("страна %s: выход через SOCKS5 отдаёт RU", sess.Country))
+			// Геосервисы ответили — цепочка жива, сбрасываем счётчик связи.
+			probeFails = 0
+			ruFails++
+			r.emit(Event{Kind: EventDegraded, Country: sess.Country, Fails: ruFails, Reason: "выход через SOCKS5 отдаёт RU"})
+			if ruFails < r.cfg.RUFailures {
+				continue
+			}
+			r.failover(fmt.Sprintf("страна %s: выход RU в %d проверках подряд", sess.Country, ruFails))
 			return outcomeNextCountry
 		}
-		if perr != nil || res.Services == 0 {
-			fails++
+		if perr != nil {
+			probeFails++
 			reason := probeReason(perr)
-			r.emit(Event{Kind: EventDegraded, Country: sess.Country, Fails: fails, Reason: reason})
-			if fails >= r.cfg.MonitorFailures {
-				if r.cfg.Direct {
-					r.failover(fmt.Sprintf("нет выхода через SOCKS5: %d сбоя подряд (%s)", fails, reason))
-					return outcomeNextEndpoint
-				}
-				r.failover(fmt.Sprintf("страна %s: %d сбоя подряд (%s)", sess.Country, fails, reason))
-				return outcomeNextCountry
+			r.emit(Event{Kind: EventDegraded, Country: sess.Country, Fails: probeFails, Reason: reason})
+			if probeFails < r.cfg.MonitorFailures {
+				continue
 			}
+			if r.cfg.Direct {
+				r.failover(fmt.Sprintf("нет выхода через SOCKS5: %d сбоя подряд (%s)", probeFails, reason))
+				return outcomeNextEndpoint
+			}
+			r.failover(fmt.Sprintf("страна %s: %d сбоя подряд (%s)", sess.Country, probeFails, reason))
+			return outcomeNextCountry
+		}
+		if res.Services == 0 {
+			// Геосервисы молчат, но связь через SOCKS5 жива (это подтвердил
+			// Prober): страну не знаем — не повод менять звено. Связь считаем
+			// доказанной и сбрасываем счётчик её сбоев.
+			probeFails = 0
+			r.emit(Event{Kind: EventDegraded, Country: sess.Country, Reason: "геосервисы не ответили — выход не проверен"})
 			continue
 		}
-		fails = 0
+		probeFails, ruFails = 0, 0
 	}
+}
+
+// traceFailed учитывает неудачную проверку внешнего туннеля: единичный сбой —
+// только просадка (событие degraded), серия из TraceFailures подряд — мёртвый
+// туннель (следующий endpoint).
+func (r *runner) traceFailed(sess *ChainSession, fails *int, reason string) (outcome, bool) {
+	*fails++
+	r.emit(Event{Kind: EventDegraded, Country: sess.Country, Fails: *fails, Reason: reason})
+	if *fails < r.cfg.TraceFailures {
+		return outcomeStop, false
+	}
+	r.failover(fmt.Sprintf("внешний туннель не отвечает (%d проверок подряд): %s", *fails, reason))
+	return outcomeNextEndpoint, true
 }
 
 // probeReason — короткая причина сбоя проверки выхода.

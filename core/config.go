@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -69,6 +71,8 @@ type Options struct {
 	// Тайминги/лимиты пайплайна (0 — значения по умолчанию).
 	MonitorInterval time.Duration
 	MonitorFailures int
+	TraceFailures   int
+	RUFailures      int
 	RetryPause      time.Duration
 	SessionTTL      time.Duration
 	MaxSessions     int
@@ -130,6 +134,8 @@ func NewConfig(opts Options) (Config, error) {
 		MTU:              warpCfg.MTU,
 		MonitorInterval:  opts.MonitorInterval,
 		MonitorFailures:  opts.MonitorFailures,
+		TraceFailures:    opts.TraceFailures,
+		RUFailures:       opts.RUFailures,
 		RetryPause:       opts.RetryPause,
 		SessionTTL:       opts.SessionTTL,
 		MaxSessions:      opts.MaxSessions,
@@ -283,8 +289,18 @@ func chainReason(err error) error {
 	return err
 }
 
+// livenessTimeout — потолок на проверку связи через SOCKS5.
+const livenessTimeout = 15 * time.Second
+
 // geoProber проверяет выход через SOCKS5 теми же геосервисами и критерием, что и
 // готовность цепочки.
+//
+// Проверка разделена на две части: «ходит ли трафик» и «какая страна на выходе».
+// Геосервисы могут молчать сами по себе (429, челлендж, блокировка на общем
+// выходном IP WARP) — это не сломанная цепочка, и на таком молчании менять звено
+// нельзя. Поэтому пустой ответ геосервисов подтверждаем отдельным запросом
+// (liveness) и отдаём Services=0: мониторинг увидит «страну не знаем» и не будет
+// переключаться.
 type geoProber struct {
 	services []chain.GeoService
 }
@@ -311,10 +327,41 @@ func (p geoProber) Probe(ctx context.Context, socks string) (ProbeResult, error)
 			res.Country, res.IP, res.Org = r.Country, r.IP, r.Org
 		}
 	}
+
+	if len(results) == 0 {
+		// Геосервисы молчат. Если трафик через SOCKS5 всё же ходит — это слепая
+		// проверка, а не сбой: возвращаем пустой результат без ошибки.
+		if lerr := probeLiveness(ctx, client); lerr != nil {
+			return ProbeResult{}, fmt.Errorf("геосервисы не ответили (%v) и связи через SOCKS5 нет: %w", err, lerr)
+		}
+		return ProbeResult{}, nil
+	}
 	if err != nil && !res.RU {
 		return res, err
 	}
 	return res, nil
+}
+
+// probeLiveness проверяет, что через SOCKS5 вообще проходит HTTPS-запрос
+// (cdn-cgi/trace Cloudflare — тот же узел, что у внешнего туннеля).
+func probeLiveness(ctx context.Context, client *http.Client) error {
+	reqCtx, cancel := context.WithTimeout(ctx, livenessTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, tunnel.TraceURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("trace через SOCKS5: статус %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func firstNonEmpty(xs ...string) string {

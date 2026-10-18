@@ -34,16 +34,26 @@ const (
 	DefaultListen = "127.0.0.1:0"
 	// DefaultEndpoints — сколько кандидатов внешних endpoint брать на прогон.
 	DefaultEndpoints = 3
-	// DefaultHandshakeTimeout / DefaultTraceTimeout — таймауты проверок туннеля.
+	// DefaultHandshakeTimeout — предел на хендшейк при переборе кандидатов.
 	DefaultHandshakeTimeout = 3 * time.Second
-	DefaultTraceTimeout     = 5 * time.Second
+	// DefaultTraceTimeout — предел на запрос trace изнутри туннеля. Достаточно
+	// щедрый, чтобы одиночная задержка пакета не выглядела сбоем.
+	DefaultTraceTimeout = 10 * time.Second
 	// DefaultMonitorInterval — как часто проверяем живую цепочку.
 	DefaultMonitorInterval = 60 * time.Second
-	// DefaultMonitorFailures — сколько сбоев подряд считать сломанным звеном.
-	DefaultMonitorFailures = 3
+	// DefaultMonitorFailures — сколько проверок выхода подряд без ответа
+	// геосервисов считать сломанным звеном (5 проверок ≈ 5 минут: переключение
+	// не должно срабатывать от одиночных просадок сети).
+	DefaultMonitorFailures = 5
+	// DefaultTraceFailures — сколько подряд неудачных проверок внешнего туннеля
+	// (trace изнутри) считать мёртвым туннелем.
+	DefaultTraceFailures = 3
+	// DefaultRUFailures — сколько подряд замеров выхода RU считать настоящим
+	// возвратом в РФ: одиночный ответ геосервиса — не повод менять страну.
+	DefaultRUFailures = 3
 	// DefaultRetryPause — пауза перед следующей попыткой после сбоя уже
 	// работавшей цепочки (в начальной фазе паузы нет: перебор ограничен).
-	DefaultRetryPause = 10 * time.Second
+	DefaultRetryPause = 30 * time.Second
 
 	// eventsBuffer — размер буфера событий: пайплайн не блокируется на медленном
 	// читателе, но и не теряет события при нормальной работе.
@@ -145,8 +155,11 @@ type ProbeResult struct {
 
 // Prober проверяет выход через SOCKS5 (мониторинг живой цепочки).
 type Prober interface {
-	// Probe опрашивает геосервисы через SOCKS5. Ошибка и пустой результат
-	// означают сбой проверки; живой прокси с выходом RU — res.RU.
+	// Probe опрашивает геосервисы через SOCKS5:
+	//   - ошибка — проверка не удалась (звено, возможно, сломано);
+	//   - пустой результат без ошибки — связь через SOCKS5 есть, но страну
+	//     определить не удалось (геосервисы молчат): менять звено не нужно;
+	//   - живой прокси с выходом RU — res.RU.
 	Probe(ctx context.Context, socks string) (ProbeResult, error)
 }
 
@@ -212,9 +225,17 @@ type Config struct {
 	// SessionTTL / MaxSessions — параметры сессий форвардера.
 	SessionTTL  time.Duration
 	MaxSessions int
-	// MonitorInterval / MonitorFailures — параметры мониторинга.
+	// MonitorInterval / MonitorFailures — параметры мониторинга: как часто
+	// проверяем цепочку и сколько проверок выхода подряд без ответа считать
+	// сломанным звеном.
 	MonitorInterval time.Duration
 	MonitorFailures int
+	// TraceFailures — сколько подряд неудач trace через туннель считать мёртвым
+	// внешним туннелем.
+	TraceFailures int
+	// RUFailures — сколько подряд замеров выхода RU считать сменой страны
+	// (в режиме Direct не применяется).
+	RUFailures int
 	// RetryPause — пауза перед попыткой после сбоя работавшей цепочки.
 	RetryPause time.Duration
 }
@@ -256,6 +277,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MonitorFailures <= 0 {
 		c.MonitorFailures = DefaultMonitorFailures
+	}
+	if c.TraceFailures <= 0 {
+		c.TraceFailures = DefaultTraceFailures
+	}
+	if c.RUFailures <= 0 {
+		c.RUFailures = DefaultRUFailures
 	}
 	if c.RetryPause <= 0 {
 		c.RetryPause = DefaultRetryPause

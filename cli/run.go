@@ -46,6 +46,11 @@ func runRun(args []string) error {
 	strict := fs.Bool("strict", true, "страна должна совпасть с запрошенной (--strict=false — только «не RU»)")
 	maxCand := fs.Int("max", 512, "сколько кандидатов проверять за скан")
 	strictRegion := fs.Bool("strict-region", false, "жёсткий скан: отвергать endpoint'ы с регионом RU")
+	monitorInterval := fs.Duration("monitor-interval", core.DefaultMonitorInterval, "как часто проверять живую цепочку")
+	monitorFailures := fs.Int("monitor-failures", core.DefaultMonitorFailures, "сколько проверок выхода подряд без ответа считать сломанным звеном")
+	traceFailures := fs.Int("trace-failures", core.DefaultTraceFailures, "сколько подряд неудач trace через туннель считать мёртвым туннелем")
+	ruFailures := fs.Int("ru-failures", core.DefaultRUFailures, "сколько подряд замеров выхода RU считать сменой страны")
+	retryPause := fs.Duration("retry-pause", core.DefaultRetryPause, "пауза перед новой попыткой после сбоя работавшей цепочки")
 	account := fs.String("account", registration.DefaultAccountFile, "файл аккаунта WARP (ключи туннеля и identity)")
 	tun := fs.Bool("tun", false, "системный туннель: весь трафик машины идёт по цепочке (нужен root)")
 	tunName := fs.String("tun-name", vpn.DefaultTUNName, "имя TUN-интерфейса")
@@ -77,28 +82,33 @@ func runRun(args []string) error {
 	}
 
 	cfg, err := core.NewConfig(core.Options{
-		WarpOnly:      *warpOnly,
-		TUN:           *tun,
-		TUNName:       *tunName,
-		TUNMTU:        *tunMTU,
-		DNS:           splitList(*dns),
-		UDP:           *udp,
-		DryRun:        *dryRun,
-		AccountFile:   *account,
-		WarpPlus:      *warpPlus,
-		CacheDir:      *cacheDir,
-		Countries:     codes,
-		Bind:          *bind,
-		Listen:        *listen,
-		InnerEndpoint: *warpEndpoint,
-		Endpoints:     *endpoints,
-		MaxCandidates: *maxCand,
-		StrictRegion:  *strictRegion,
-		TestURL:       *testURL,
-		ReadyTimeout:  *readyTimeout,
-		Attempts:      *attempts,
-		Strict:        *strict,
-		Logf:          logf,
+		WarpOnly:        *warpOnly,
+		TUN:             *tun,
+		TUNName:         *tunName,
+		TUNMTU:          *tunMTU,
+		DNS:             splitList(*dns),
+		UDP:             *udp,
+		DryRun:          *dryRun,
+		AccountFile:     *account,
+		WarpPlus:        *warpPlus,
+		CacheDir:        *cacheDir,
+		Countries:       codes,
+		Bind:            *bind,
+		Listen:          *listen,
+		InnerEndpoint:   *warpEndpoint,
+		Endpoints:       *endpoints,
+		MaxCandidates:   *maxCand,
+		StrictRegion:    *strictRegion,
+		TestURL:         *testURL,
+		ReadyTimeout:    *readyTimeout,
+		Attempts:        *attempts,
+		Strict:          *strict,
+		MonitorInterval: *monitorInterval,
+		MonitorFailures: *monitorFailures,
+		TraceFailures:   *traceFailures,
+		RUFailures:      *ruFailures,
+		RetryPause:      *retryPause,
+		Logf:            logf,
 	})
 	if err != nil {
 		return err
