@@ -39,7 +39,7 @@ func runRun(args []string) error {
 	listen := fs.String("listen", core.DefaultListen, "адрес UDP-форвардера (loopback, порт 0 — свободный)")
 	warpEndpoint := fs.String("warp-endpoint", core.DefaultInnerEndpoint, "целевой адрес внутреннего WARP для форвардера")
 	warpPlus := fs.String("warp-plus", "", "путь к бинарнику warp-plus (по умолчанию ищем в PATH и рядом)")
-	cacheDir := fs.String("cache-dir", chain.DefaultCacheDir, "каталог identity warp-plus и кэша Psiphon")
+	cacheDir := fs.String("cache-dir", chain.DefaultCacheDir(), "каталог identity warp-plus и кэша Psiphon")
 	testURL := fs.String("test-url", chain.DefaultTestURL, "URL проверки связи внутри warp-plus (нужен HEAD=200)")
 	readyTimeout := fs.Duration("ready-timeout", chain.DefaultReadyTimeout, "сколько ждать готовности одной попытки")
 	attempts := fs.Int("attempts", chain.DefaultAttempts, "попыток на страну")

@@ -22,7 +22,7 @@ func runChain(args []string) error {
 	countries := fs.String("countries", strings.Join(chain.DefaultCountries, ","), "страны через запятую (порядок = приоритет)")
 	endpoint := fs.String("endpoint", chain.DefaultEndpoint, "WARP-endpoint для внутреннего туннеля")
 	bind := fs.String("bind", chain.DefaultBind, "адрес SOCKS5-прокси")
-	cacheDir := fs.String("cache-dir", chain.DefaultCacheDir, "каталог identity warp-plus и кэша Psiphon")
+	cacheDir := fs.String("cache-dir", chain.DefaultCacheDir(), "каталог identity warp-plus и кэша Psiphon")
 	testURL := fs.String("test-url", chain.DefaultTestURL, "URL проверки связи внутри warp-plus (нужен HEAD=200)")
 	readyTimeout := fs.Duration("ready-timeout", chain.DefaultReadyTimeout, "сколько ждать готовности одной попытки")
 	attempts := fs.Int("attempts", chain.DefaultAttempts, "попыток на страну")

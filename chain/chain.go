@@ -32,11 +32,30 @@ var DefaultCountries = []string{"NL", "SE", "DE", "US", "PL"}
 const (
 	DefaultEndpoint     = "162.159.192.1:2408"
 	DefaultBind         = "127.0.0.1:8086"
-	DefaultCacheDir     = "warpgen-chain"
 	DefaultTestURL      = "http://example.com/"
 	DefaultReadyTimeout = 100 * time.Second
 	DefaultAttempts     = 2
+
+	// legacyCacheDir — прежний каталог по умолчанию: относительная папка рядом
+	// с текущим каталогом. Оставлена как запасной вариант, если домашний каталог
+	// недоступен.
+	legacyCacheDir = "warpgen-chain"
 )
+
+// DefaultCacheDir — каталог identity warp-plus и кэша Psiphon по умолчанию:
+// ~/.warpgen/chain.
+//
+// Раньше это была относительная папка warpgen-chain рядом с текущим каталогом:
+// запуск `sudo ./warpgen run` из корня репозитория оставлял там root-овый каталог,
+// который потом мешал gofmt и обходу репозитория. Абсолютный путь в домашнем
+// каталоге этой проблемы не создаёт (у root он свой — /root/.warpgen).
+func DefaultCacheDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return legacyCacheDir
+	}
+	return filepath.Join(home, ".warpgen", "chain")
+}
 
 // pollInterval — пауза между опросами готовности внутри одной попытки.
 const pollInterval = 1500 * time.Millisecond
@@ -76,7 +95,7 @@ func (o Options) withDefaults() Options {
 		o.Bind = DefaultBind
 	}
 	if o.CacheDir == "" {
-		o.CacheDir = DefaultCacheDir
+		o.CacheDir = DefaultCacheDir()
 	}
 	if o.TestURL == "" {
 		o.TestURL = DefaultTestURL

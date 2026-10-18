@@ -83,6 +83,9 @@ func NewConfig(opts Options) (Config, error) {
 	if len(opts.Countries) == 0 && !opts.WarpOnly {
 		return Config{}, errors.New("не задан список стран (--countries)")
 	}
+	// Каталог кэша нормализуем сразу: от него зависят и preflight, и цепочка,
+	// а "" превратился бы в относительный primary/ рядом с текущим каталогом.
+	opts.CacheDir = firstNonEmpty(opts.CacheDir, chain.DefaultCacheDir())
 	// WARP-safe параметры обфускации и MTU — те же, что у команды gen.
 	warpCfg := config.NewConfig()
 

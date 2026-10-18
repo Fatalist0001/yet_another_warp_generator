@@ -11,6 +11,22 @@ import (
 	"time"
 )
 
+// Каталог кэша по умолчанию — абсолютный путь в домашнем каталоге: относительный
+// создавал бы root-овый каталог в репозитории при запуске `sudo ./warpgen run`
+// из корня (он ломал gofmt и обход репозитория).
+func TestDefaultCacheDirLivesInHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	want := filepath.Join(home, ".warpgen", "chain")
+	if got := DefaultCacheDir(); got != want {
+		t.Fatalf("DefaultCacheDir() = %q, ожидали %q", got, want)
+	}
+	if !filepath.IsAbs(DefaultCacheDir()) {
+		t.Error("каталог кэша по умолчанию должен быть абсолютным")
+	}
+}
+
 func TestRunCountriesStopsOnFirstSuccess(t *testing.T) {
 	opts := Options{Countries: []string{"NL", "DE"}, Attempts: 2}
 	calls := 0
@@ -149,7 +165,7 @@ func TestResolveWarpPlusExplicit(t *testing.T) {
 
 func TestOptionsWithDefaults(t *testing.T) {
 	got := Options{}.withDefaults()
-	if got.Endpoint != DefaultEndpoint || got.Bind != DefaultBind || got.CacheDir != DefaultCacheDir {
+	if got.Endpoint != DefaultEndpoint || got.Bind != DefaultBind || got.CacheDir != DefaultCacheDir() {
 		t.Errorf("дефолты адресов не подставлены: %+v", got)
 	}
 	if got.TestURL != DefaultTestURL || got.ReadyTimeout != DefaultReadyTimeout || got.Attempts != DefaultAttempts {

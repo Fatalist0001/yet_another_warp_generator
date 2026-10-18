@@ -82,9 +82,10 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
 
 warp-plus в проект не вшит — вызывается как внешний релизный бинарник v1.2.6
 (`--warp-plus PATH`, иначе ищется в `PATH` и рядом с `warpgen`). Identity для него
-собирается из аккаунта warpgen в `--cache-dir` (по умолчанию `warpgen-chain/`,
-файл `primary/wgcf-identity.json`, права 0600); каталог в `.gitignore`, потому что
-содержит приватный ключ.
+собирается из аккаунта warpgen в `--cache-dir` (по умолчанию `~/.warpgen/chain`,
+файл `primary/wgcf-identity.json`, права 0600); путь абсолютный, чтобы запуск под
+`sudo` из корня репозитория не оставлял там root-овый каталог. Старый относительный
+`warpgen-chain/` тоже в `.gitignore`, потому что содержит приватный ключ.
 
 | Флаг | По умолчанию | Смысл |
 |---|---|---|
@@ -92,7 +93,7 @@ warp-plus в проект не вшит — вызывается как внеш
 | `--countries` | `NL,SE,DE,US,PL` | страны через запятую, порядок = приоритет (FI вручную, но он не работает) |
 | `--endpoint` | `162.159.192.1:2408` | WARP-endpoint внутреннего туннеля |
 | `--bind` | `127.0.0.1:8086` | адрес SOCKS5-прокси |
-| `--cache-dir` | `warpgen-chain` | каталог identity warp-plus и кэша Psiphon |
+| `--cache-dir` | `~/.warpgen/chain` | каталог identity warp-plus и кэша Psiphon |
 | `--test-url` | `http://example.com/` | URL проверки связи внутри warp-plus (нужен `HEAD=200`, см. ограничения) |
 | `--ready-timeout` | `100s` | сколько ждать готовности одной попытки |
 | `--attempts` | `2` | попыток на страну |
@@ -118,7 +119,7 @@ curl -s https://www.cloudflare.com/cdn-cgi/trace     # нужно warp=on, colo 
 
 # 3. Запустить warp-plus вручную (релизный бинарник v1.2.6):
 warp-plus -4 -e 162.159.192.1:2408 -b 127.0.0.1:8086 --cfon --country NL \
-  --test-url http://example.com/ --cache-dir warpgen-chain -v
+  --test-url http://example.com/ --cache-dir "$HOME/.warpgen/chain" -v
 
 # 4. Проверить выход через прокси:
 curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
@@ -195,7 +196,7 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
 | `--listen` | `127.0.0.1:0` | адрес UDP-форвардера (loopback, 0 — свободный порт) |
 | `--warp-endpoint` | `162.159.192.1:2408` | внутренний WARP, куда форвардер отправляет пакеты |
 | `--warp-plus` | поиск в `PATH` и рядом | путь к бинарнику warp-plus |
-| `--cache-dir` | `warpgen-chain` | каталог identity warp-plus и кэша Psiphon |
+| `--cache-dir` | `~/.warpgen/chain` | каталог identity warp-plus и кэша Psiphon |
 | `--test-url` | `http://example.com/` | URL проверки связи внутри warp-plus (нужен `HEAD=200`) |
 | `--ready-timeout` | `100s` | сколько ждать готовности одной попытки |
 | `--attempts` | `2` | попыток на страну |
