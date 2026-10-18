@@ -22,6 +22,9 @@ import (
 // UDP-форвардер, поверх warp-plus поднимает Psiphon, и наружу отдаётся SOCKS5 с
 // выходом вне РФ.
 //
+// С --warp-only Psiphon не запускается: наружу отдаётся локальный SOCKS5 прямо
+// поверх WARP-туннеля с обфускацией AWG (выход остаётся российским).
+//
 // Без --tun для этого не нужны root и TUN: наружу смотрит только SOCKS5.
 // С --tun весь трафик машины идёт по той же цепочке через TUN-интерфейс.
 func runRun(args []string) error {
@@ -29,7 +32,8 @@ func runRun(args []string) error {
 	// Справка по флагам печатается в stdout: `warpgen run --help` — рабочая
 	// команда, её вывод хочется видеть без перенаправления stderr.
 	fs.SetOutput(os.Stdout)
-	countries := fs.String("countries", strings.Join(chain.DefaultCountries, ","), "страны через запятую (порядок = приоритет)")
+	countries := fs.String("countries", strings.Join(chain.DefaultCountries, ","), "страны через запятую (порядок = приоритет; с --warp-only не нужны)")
+	warpOnly := fs.Bool("warp-only", false, "без Psiphon: SOCKS5 прямо поверх WARP-туннеля (обфускация AWG сохраняется)")
 	endpoints := fs.Int("endpoints", core.DefaultEndpoints, "сколько кандидатов внешних endpoint'ов использовать")
 	bind := fs.String("bind", chain.DefaultBind, "адрес SOCKS5-прокси")
 	listen := fs.String("listen", core.DefaultListen, "адрес UDP-форвардера (loopback, порт 0 — свободный)")
@@ -73,6 +77,7 @@ func runRun(args []string) error {
 	}
 
 	cfg, err := core.NewConfig(core.Options{
+		WarpOnly:      *warpOnly,
 		TUN:           *tun,
 		TUNName:       *tunName,
 		TUNMTU:        *tunMTU,

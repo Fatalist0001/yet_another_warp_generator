@@ -20,6 +20,9 @@ const (
 	EventOuterChecked Kind = "outer_checked"
 	// EventForwarderUp — UDP-форвардер слушает локальный адрес.
 	EventForwarderUp Kind = "forwarder_up"
+	// EventSocksUp — локальный SOCKS5-сервер поднят над внешним туннелем
+	// (режим без Psiphon, Direct).
+	EventSocksUp Kind = "socks_up"
 	// EventPsiphonStarting — начинается попытка страны (запуск warp-plus с Psiphon).
 	EventPsiphonStarting Kind = "psiphon_starting"
 	// EventReady — SOCKS5 поднят и ведёт в нужную страну.
@@ -105,6 +108,8 @@ func (e Event) String() string {
 		return "трафик через туннель проверен (warp=on, узел " + dash(e.Colo) + ")"
 	case EventForwarderUp:
 		return "UDP-форвардер слушает " + dash(e.Forwarder)
+	case EventSocksUp:
+		return "SOCKS5 без Psiphon слушает " + dash(e.SOCKS) + " (трафик идёт через WARP)"
 	case EventPsiphonStarting:
 		return "страна " + dash(e.Country) + ": запускаем warp-plus с Psiphon"
 	case EventReady:

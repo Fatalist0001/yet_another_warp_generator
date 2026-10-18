@@ -699,6 +699,150 @@ func TestRunNoEndpoints(t *testing.T) {
 	}
 }
 
+// directConfig — конфигурация режима без Psiphon: SOCKS5 поверх туннеля, без
+// цепочки и списка стран.
+func directConfig(t *testing.T, fleet *tunnelFleet, loc *fakeLocator, pr *fakeProber) Config {
+	t.Helper()
+	cfg := testConfig(fleet, loc, nil, pr)
+	cfg.Direct = true
+	cfg.Countries = nil
+	cfg.Bind = "127.0.0.1:0"
+	return cfg
+}
+
+// Режим без Psiphon: наружу отдаётся SOCKS5 поверх самого туннеля, трафик ходит,
+// а российский выход не считается сбоем.
+func TestRunWarpOnlyServesSocks(t *testing.T) {
+	echo := tcpEcho(t)
+	fleet := &tunnelFleet{tcpEcho: echo}
+	loc := &fakeLocator{endpoints: []Endpoint{endpoint162("162.159.192.1:2408")}}
+	pr := &fakeProber{steps: []probeStep{{
+		res: ProbeResult{Country: "RU", IP: "95.1.2.3", Org: "AS1 RU", Services: 2, RU: true},
+	}}}
+	events, cancel := startRun(t, directConfig(t, fleet, loc, pr))
+
+	expectEvent(t, events, EventEndpointSelected, "старт")
+	expectEvent(t, events, EventOuterUp, "туннель поднят")
+	expectEvent(t, events, EventOuterChecked, "проверка туннеля")
+	socks := expectEvent(t, events, EventSocksUp, "SOCKS5 без Psiphon")
+	if !strings.HasPrefix(socks.SOCKS, "127.0.0.1:") {
+		t.Errorf("адрес SOCKS5 = %q, ожидали loopback", socks.SOCKS)
+	}
+	ready := expectEvent(t, events, EventReady, "готовность")
+	if ready.SOCKS != socks.SOCKS || ready.Country != "RU" || ready.IP != "203.0.113.1" {
+		t.Errorf("ready = %+v", ready)
+	}
+
+	// Трафик через SOCKS5 действительно уходит в туннель (локальное TCP-эхо).
+	conn := socksConnect(t, ready.SOCKS, echo)
+	defer conn.Close()
+	if _, err := conn.Write([]byte("warp")); err != nil {
+		t.Fatalf("запись через SOCKS5: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 16)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("чтение через SOCKS5: %v", err)
+	}
+	if string(buf[:n]) != "warp" {
+		t.Errorf("вернулось %q", buf[:n])
+	}
+
+	// Даём мониторингу сработать: выход RU в этом режиме не меняет звено.
+	deadline := time.Now().Add(2 * time.Second)
+	for pr.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if pr.count() == 0 {
+		t.Error("мониторинг ни разу не проверил выход через SOCKS5")
+	}
+
+	cancel()
+	evs := drain(t, events)
+	for _, ev := range evs {
+		switch ev.Kind {
+		case EventForwarderUp, EventPsiphonStarting:
+			t.Errorf("в режиме без Psiphon лишнее событие: %+v", ev)
+		case EventFailover:
+			t.Errorf("выход RU не должен менять звено: %+v", ev)
+		}
+	}
+	if last := evs[len(evs)-1]; last.Kind != EventStopped || last.Err != "" {
+		t.Errorf("остановка: %+v", last)
+	}
+}
+
+// Режим без Psiphon с --tun: мост идёт на локальный SOCKS5, маршруты применяются
+// после ready, остановка снимает всё.
+func TestRunWarpOnlyWithTUN(t *testing.T) {
+	fleet := &tunnelFleet{tcpEcho: tcpEcho(t)}
+	loc := &fakeLocator{endpoints: []Endpoint{endpoint162("162.159.192.1:2408")}}
+	tun := &fakeTUN{}
+	cfg := directConfig(t, fleet, loc, &fakeProber{})
+	cfg.TUN = tun.factory()
+	events, cancel := startRun(t, cfg)
+
+	socks := nextUntil(t, events, EventSocksUp, "SOCKS5")
+	ready := nextUntil(t, events, EventReady, "готовность")
+	tunUp := nextUntil(t, events, EventTunUp, "TUN")
+	if tunUp.TUN != "warpgen0" {
+		t.Errorf("tun_up = %+v", tunUp)
+	}
+	applied := nextUntil(t, events, EventRoutesApplied, "маршруты")
+	if applied.Routes != 9 {
+		t.Errorf("routes_applied = %+v", applied)
+	}
+	nextUntil(t, events, EventDNSSelected, "DNS")
+
+	cancel()
+	evs := drain(t, events)
+	if len(evs) != 2 || evs[0].Kind != EventRoutesReverted || evs[1].Kind != EventStopped {
+		t.Fatalf("остановка: %+v", evs)
+	}
+
+	starts := stepCalls(tun.calls(), "start")
+	if len(starts) != 1 {
+		t.Fatalf("запуск TUN: %+v", starts)
+	}
+	if starts[0].socks != socks.SOCKS || starts[0].socks != ready.SOCKS {
+		t.Errorf("TUN поднят на %q, а SOCKS5 — %q", starts[0].socks, socks.SOCKS)
+	}
+	if starts[0].endpoint != "162.159.192.1:2408" {
+		t.Errorf("исключение endpoint = %q", starts[0].endpoint)
+	}
+}
+
+// Сбои проверки выхода в режиме без Psiphon ведут к пересозданию туннеля на
+// следующем endpoint'е (менять страну нельзя — её нет).
+func TestRunWarpOnlyRecreatesTunnelOnProbeFailures(t *testing.T) {
+	fleet := &tunnelFleet{tcpEcho: tcpEcho(t)}
+	loc := &fakeLocator{endpoints: []Endpoint{endpoint162("162.159.192.1:2408")}}
+	pr := &fakeProber{steps: []probeStep{{err: errors.New("нет ответа")}}}
+	events, cancel := startRun(t, directConfig(t, fleet, loc, pr))
+	defer cancel()
+
+	nextUntil(t, events, EventReady, "готовность")
+	for want := 1; want <= 3; want++ {
+		ev := nextUntil(t, events, EventDegraded, "просадка")
+		if ev.Fails != want {
+			t.Errorf("сбой номер = %d, ожидали %d", ev.Fails, want)
+		}
+	}
+	fail := nextUntil(t, events, EventFailover, "пересоздание туннеля")
+	if !strings.Contains(fail.Reason, "нет выхода через SOCKS5") {
+		t.Errorf("причина = %q", fail.Reason)
+	}
+	next := nextUntil(t, events, EventEndpointSelected, "новый endpoint")
+	if next.Endpoint != "162.159.192.1:2408" {
+		t.Errorf("endpoint = %q", next.Endpoint)
+	}
+	nextUntil(t, events, EventSocksUp, "SOCKS5 после пересоздания")
+	if ready, _ := fleet.counts(); ready != 2 {
+		t.Errorf("туннелей создано %d, ожидали 2", ready)
+	}
+}
+
 // События не несут секретов: ключи и токены в них не попадают.
 func TestEventsCarryNoSecrets(t *testing.T) {
 	fleet, loc, ch, pr := happyPath(t)

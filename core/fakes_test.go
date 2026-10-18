@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,8 @@ import (
 type tunnelFleet struct {
 	// echo — адрес локального UDP-эха ("" — DialContext отдаёт ошибку).
 	echo string
+	// tcpEcho — адрес локального TCP-эха для режима Direct ("" — отказ).
+	tcpEcho string
 	// HandshakeFn — ответ хендшейка по номеру вызова (nil — успех).
 	HandshakeFn func(call int, endpoint string) bool
 	// TraceFn — ответ trace по номеру вызова (nil — успешный trace warp=on).
@@ -85,10 +88,16 @@ func (t *fakeTunnel) FetchTrace(context.Context, time.Duration) (tunnel.TraceRes
 }
 
 func (t *fakeTunnel) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	var d net.Dialer
+	if strings.HasPrefix(network, "tcp") {
+		if t.fleet.tcpEcho == "" {
+			return nil, errors.New("поддельный туннель: не задано TCP-эхо")
+		}
+		return d.DialContext(ctx, "tcp", t.fleet.tcpEcho)
+	}
 	if t.fleet.echo == "" {
 		return nil, errors.New("поддельный туннель: не задано эхо")
 	}
-	var d net.Dialer
 	return d.DialContext(ctx, "udp", t.fleet.echo)
 }
 
@@ -220,6 +229,13 @@ type fakeProber struct {
 
 func healthyProbe() ProbeResult {
 	return ProbeResult{Country: "NL", IP: "203.0.113.9", Org: "AS123 Test", Services: 2}
+}
+
+// count — сколько раз опрашивали геосервисы.
+func (p *fakeProber) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
 }
 
 func (p *fakeProber) Probe(_ context.Context, _ string) (ProbeResult, error) {

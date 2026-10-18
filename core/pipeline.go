@@ -20,6 +20,8 @@ type runner struct {
 	events chan Event
 	// tun — поднятый системный туннель (режим --tun), nil — только SOCKS5.
 	tun TUNSystem
+	// proxy — локальный SOCKS5 над туннелем (режим Direct), nil — обычный режим.
+	proxy *SocksProxy
 }
 
 // loop выполняет пайплайн и закрывает поток событий.
@@ -46,6 +48,23 @@ func (r *runner) pipeline(ctx context.Context) error {
 	// Системный туннель живёт дольше одной попытки и снимается на выходе.
 	// При failover он остаётся на месте: трафик не уходит напрямую.
 	defer r.stopTUN(ctx)
+
+	if r.cfg.Direct {
+		// Слушатель SOCKS5 занимает один порт на весь прогон: при failover
+		// меняется только туннель (SetTunnel), а мост системного туннеля
+		// продолжает ходить на тот же адрес.
+		proxy, err := NewSocksProxy(SocksOptions{Listen: r.cfg.Bind, Logf: r.cfg.Logf})
+		if err != nil {
+			return err
+		}
+		r.proxy = proxy
+		defer proxy.Close()
+		go func() {
+			if err := proxy.Serve(ctx); err != nil && ctx.Err() == nil {
+				r.log("SOCKS5 остановился: %v", err)
+			}
+		}()
+	}
 
 	cands, err := r.cfg.Locator.Locate(ctx, r.cfg.Endpoints)
 	if err != nil {
@@ -135,6 +154,10 @@ func (r *runner) endpointRound(ctx context.Context, ep Endpoint) (bool, error) {
 	}
 	r.emit(Event{Kind: EventOuterChecked, Endpoint: ep.Addr, Colo: tr.Colo, Region: tr.Loc})
 
+	if r.cfg.Direct {
+		return r.directRound(ctx, tn, ep, tr)
+	}
+
 	fwd, err := NewForwarder(tn, ForwarderOptions{
 		Listen:      r.cfg.Listen,
 		Target:      r.cfg.InnerEndpoint,
@@ -200,6 +223,35 @@ func (r *runner) endpointRound(ctx context.Context, ep Endpoint) (bool, error) {
 		}
 	}
 	return ready, nil
+}
+
+// directRound — режим без Psiphon: наружу отдаётся SOCKS5 поверх уже
+// проверенного внешнего WARP-туннеля. Страны здесь нет (Cloudflare из РФ видит
+// RU), поэтому любой сбой мониторинга ведёт к пересозданию туннеля на следующем
+// endpoint'е. Возвращает true: готовность уже случилась, пайплайн держит цикл.
+func (r *runner) directRound(ctx context.Context, tn Tunnel, ep Endpoint, tr tunnel.TraceResult) (bool, error) {
+	proxy := r.proxy
+	// Пока туннель привязан, новые соединения идут через него; после возврата
+	// из раунда (сбой или остановка) прокси отсоединяется.
+	proxy.SetTunnel(tn)
+	defer proxy.SetTunnel(nil)
+
+	socks := proxy.Addr()
+	r.emit(Event{Kind: EventSocksUp, SOCKS: socks, Endpoint: ep.Addr, Region: tr.Loc})
+	r.emit(Event{Kind: EventReady, SOCKS: socks, Country: tr.Loc, IP: tr.IP})
+
+	// Первый ready поднимает системный туннель, следующие (после failover)
+	// переводят мост на тот же SOCKS5 с новым туннелем.
+	if err := r.afterReady(ctx, socks, ep.Addr); err != nil {
+		r.stopTUN(ctx)
+		return true, err
+	}
+
+	sess := &ChainSession{SOCKS: socks, Country: tr.Loc, IP: tr.IP}
+	if r.monitor(ctx, tn, sess) == outcomeStop {
+		r.stopTUN(ctx)
+	}
+	return true, nil
 }
 
 // afterReady — момент готовности цепочки: первый ready поднимает системный
@@ -316,8 +368,9 @@ const (
 )
 
 // monitor следит за живой цепочкой: раз в MonitorInterval проверяет внешний
-// туннель (trace изнутри) и выход через SOCKS5. Выход RU меняет звено сразу, прочие
-// сбои — после MonitorFailures подряд.
+// туннель (trace изнутри) и выход через SOCKS5. Выход RU меняет звено сразу (кроме
+// режима Direct, где RU — ожидаемый выход), прочие сбои — после MonitorFailures
+// подряд.
 func (r *runner) monitor(ctx context.Context, tn Tunnel, sess *ChainSession) outcome {
 	ticker, stop := r.clock.Ticker(r.cfg.MonitorInterval)
 	defer stop()
@@ -353,7 +406,9 @@ func (r *runner) monitor(ctx context.Context, tn Tunnel, sess *ChainSession) out
 		if ctx.Err() != nil {
 			return outcomeStop
 		}
-		if res.RU {
+		// В режиме Direct выход RU — норма (Cloudflare назначает его по
+		// геолокации клиента), менять страну нельзя: проверяем только связь.
+		if res.RU && !r.cfg.Direct {
 			r.failover(fmt.Sprintf("страна %s: выход через SOCKS5 отдаёт RU", sess.Country))
 			return outcomeNextCountry
 		}
@@ -362,6 +417,10 @@ func (r *runner) monitor(ctx context.Context, tn Tunnel, sess *ChainSession) out
 			reason := probeReason(perr)
 			r.emit(Event{Kind: EventDegraded, Country: sess.Country, Fails: fails, Reason: reason})
 			if fails >= r.cfg.MonitorFailures {
+				if r.cfg.Direct {
+					r.failover(fmt.Sprintf("нет выхода через SOCKS5: %d сбоя подряд (%s)", fails, reason))
+					return outcomeNextEndpoint
+				}
 				r.failover(fmt.Sprintf("страна %s: %d сбоя подряд (%s)", sess.Country, fails, reason))
 				return outcomeNextCountry
 			}

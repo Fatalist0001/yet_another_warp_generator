@@ -24,9 +24,13 @@ type Options struct {
 	WarpPlus string
 	// CacheDir — каталог identity warp-plus и кэша Psiphon.
 	CacheDir string
-	// Countries — страны Psiphon в порядке приоритета.
+	// Countries — страны Psiphon в порядке приоритета (в WarpOnly не нужны).
 	Countries []string
-	// Bind — адрес SOCKS5, который поднимает warp-plus.
+	// WarpOnly — режим без Psiphon: наружу отдаётся локальный SOCKS5 поверх
+	// внешнего WARP-туннеля с обфускацией AWG.
+	WarpOnly bool
+	// Bind — адрес SOCKS5: в обычном режиме его слушает warp-plus, в WarpOnly —
+	// локальный сервер поверх туннеля.
 	Bind string
 	// Listen — адрес UDP-форвардера (loopback, порт 0 — свободный).
 	Listen string
@@ -76,7 +80,7 @@ type Options struct {
 // Сетевых запросов не делает: локальные проверки (аккаунт, identity, бинарник)
 // выполняет Preflight уже внутри Run.
 func NewConfig(opts Options) (Config, error) {
-	if len(opts.Countries) == 0 {
+	if len(opts.Countries) == 0 && !opts.WarpOnly {
 		return Config{}, errors.New("не задан список стран (--countries)")
 	}
 	// WARP-safe параметры обфускации и MTU — те же, что у команды gen.
@@ -107,6 +111,8 @@ func NewConfig(opts Options) (Config, error) {
 	}
 
 	cfg := Config{
+		Direct:           opts.WarpOnly,
+		Bind:             opts.Bind,
 		InnerEndpoint:    firstNonEmpty(opts.InnerEndpoint, DefaultInnerEndpoint),
 		Listen:           firstNonEmpty(opts.Listen, DefaultListen),
 		Countries:        append([]string(nil), opts.Countries...),
@@ -117,7 +123,7 @@ func NewConfig(opts Options) (Config, error) {
 		Prober:           geoProber{services: chain.DefaultGeoServices},
 		Clock:            opts.Clock,
 		Logf:             opts.Logf,
-		Preflight:        func(context.Context) error { return preflight(opts.AccountFile, opts.CacheDir, opts.WarpPlus) },
+		Preflight:        preflightFn(opts),
 		MTU:              warpCfg.MTU,
 		MonitorInterval:  opts.MonitorInterval,
 		MonitorFailures:  opts.MonitorFailures,
@@ -162,19 +168,36 @@ func chainOptions(opts Options) chain.Options {
 	}
 }
 
+// preflightFn выбирает локальные проверки под режим. В WarpOnly warp-plus не
+// участвует, поэтому его identity и бинарник не нужны — только аккаунт.
+func preflightFn(opts Options) func(context.Context) error {
+	if opts.WarpOnly {
+		return func(context.Context) error { return checkAccount(opts.AccountFile) }
+	}
+	return func(context.Context) error { return preflight(opts.AccountFile, opts.CacheDir, opts.WarpPlus) }
+}
+
 // preflight — только локальные проверки: аккаунт warpgen, identity для warp-plus,
 // бинарник warp-plus. В сеть не ходит.
 func preflight(accountFile, cacheDir, warpPlus string) error {
-	if _, err := registration.LoadAccount(accountFile); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("нет аккаунта warpgen (%s): сгенерируйте командой `warpgen register` или укажите --account", accountFile)
-		}
+	if err := checkAccount(accountFile); err != nil {
 		return err
 	}
 	if err := chain.EnsureIdentity(cacheDir, accountFile); err != nil {
 		return err
 	}
 	if _, err := chain.ResolveWarpPlus(warpPlus); err != nil {
+		return err
+	}
+	return nil
+}
+
+// checkAccount — аккаунт warpgen есть и читается.
+func checkAccount(accountFile string) error {
+	if _, err := registration.LoadAccount(accountFile); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("нет аккаунта warpgen (%s): сгенерируйте командой `warpgen register` или укажите --account", accountFile)
+		}
 		return err
 	}
 	return nil

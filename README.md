@@ -147,6 +147,8 @@ curl --proxy socks5h://127.0.0.1:8086 https://ipinfo.io/json
 самодостаточна: сама поднимает внешний AWG-туннель **внутри процесса** (userspace,
 без root и TUN, конфиг на диск не пишется), пускает через него UDP внутреннего WARP
 локальным форвардером, запускает warp-plus с Psiphon и отдаёт SOCKS5 с выходом вне РФ.
+С `--warp-only` Psiphon не запускается вообще: наружу отдаётся SOCKS5 прямо поверх
+WARP-туннеля с обфускацией AWG (см. ниже).
 
 ```bash
 ./warpgen run --countries NL,SE,DE,US,PL
@@ -201,6 +203,7 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
 | `--max` | `512` | сколько кандидатов проверять за скан |
 | `--strict-region` | `false` | жёсткий скан: отвергать endpoint'ы с регионом RU |
 | `--account` | `warpgen-account.json` | файл аккаунта warpgen |
+| `--warp-only` | `false` | без Psiphon: SOCKS5 поверх самого WARP-туннеля (warp-plus, identity и страны не нужны) |
 | `--tun` | `false` | системный туннель: весь трафик машины идёт по цепочке (нужен root) |
 | `--tun-name` | `warpgen0` | имя TUN-интерфейса |
 | `--tun-mtu` | `1400` | MTU TUN-интерфейса |
@@ -211,10 +214,40 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
 | `--debug` | `false` | служебный вывод (в stderr) |
 
 События пайплайна: `endpoint_selected`, `outer_up`, `outer_checked`, `forwarder_up`,
-`psiphon_starting`, `ready`, `tun_up`, `routes_applied`, `routes_reverted`,
+`socks_up`, `psiphon_starting`, `ready`, `tun_up`, `routes_applied`, `routes_reverted`,
 `dns_selected`, `dns_failed`, `degraded`, `failover`, `stopped`. Секретов (ключей,
 токенов) в них нет; в JSON-режиме подсказки уходят в stderr, чтобы поток stdout
 оставался чистым NDJSON.
+
+### Режим без Psiphon: `run --warp-only`
+
+Psiphon не запускается вообще: наружу отдаётся SOCKS5 прямо поверх внешнего
+WARP-туннеля с обфускацией AWG. warp-plus, его identity, `--cache-dir`, `--countries`
+и внутренний WARP не нужны — только аккаунт warpgen. SOCKS5-сервер поднимает сам
+`warpgen` (в процессе), поэтому отдельного бинарника рядом не требуется.
+
+```
+клиент → SOCKS5 (в процессе) → userspace-туннель (AWG) → endpoint Cloudflare
+```
+
+```bash
+./warpgen run --warp-only                     # SOCKS5 на 127.0.0.1:8086
+curl --proxy socks5h://127.0.0.1:8086 https://www.cloudflare.com/cdn-cgi/trace
+# ... warp=on ... loc=RU
+sudo ./warpgen run --warp-only --tun          # тем же туннелем — весь трафик машины
+```
+
+- **Выход остаётся российским:** Cloudflare назначает выходной IP по геолокации
+  клиента, поэтому `loc=RU` — норма, а не сбой. Мониторинг проверяет только связь;
+  после трёх сбоев подряд пересоздаёт туннель на следующем endpoint'е, страну не
+  меняет.
+- Быстрее полной цепочки: один туннель без внутреннего WARP и Psiphon (на замерах
+  ~0.9 МБ/с против 0.3–0.8 МБ/с с Psiphon).
+- С `--tun` работает так же: весь трафик машины идёт через этот единственный
+  туннель. Событие `socks_up` сообщает адрес локального SOCKS5.
+- SOCKS5 слушает только loopback (прокси отдаёт туннель без аутентификации) и
+  занимает один порт на весь прогон: при failover меняется только туннель, а мост
+  системного туннеля продолжает ходить на тот же адрес.
 
 ### Известные ограничения run
 
@@ -328,6 +361,7 @@ WARPGEN_E2E=1 go test -tags e2e ./core/ -run E2E -v
 | 10 | поведение при failover | события `failover` и `dns_selected`, маршруты и TUN остаются на месте, трафик не уходит напрямую |
 | 11 | чистый откат после Ctrl+C | `ip route show` без `0.0.0.0/1`, `128.0.0.0/1` и `/32` endpoint, `ip -6 route` без blackhole, `ip link show warpgen0` — нет интерфейса, DNS возвращён (прежние серверы интерфейса), файл состояния удалён |
 | 12 | восстановление после `kill -9` | `sudo ./warpgen tun-revert` печатает и выполняет отмену записанных команд (журнал `~/.warpgen/state/warpgen0.st` очищается, повтор сообщает «откат уже сделан»); запасной вариант — вручную: `sudo ip route del 0.0.0.0/1 dev warpgen0`, `sudo ip route del 128.0.0.0/1 dev warpgen0`, `sudo ip -6 route del blackhole default`, `sudo resolvectl revert <физический интерфейс>` |
+| 13 | `sudo ./warpgen run --warp-only --tun`, затем `curl http://1.1.1.1/`, `ip route show`, `pgrep -a warp-plus` | трафик идёт через единственный туннель (выход RU, `warp=on`), маршруты и TUN снимаются после Ctrl+C, процесс warp-plus не запускается |
 
 Пункты 6–12 требуют root и меняют сеть машины, поэтому автоматических тестов для них
 в репозитории нет осознанно: прогон такого теста в обычном `go test ./...` (или в CI)
@@ -366,7 +400,7 @@ WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run Inte
 - `dnscheck/` — проверка DNS через туннель (пресеты + произвольный IP)
 - `config/` — генератор `.conf` (WARP-safe AWG 2.0) и генераторы I1 (QUIC/DNS/SIP/STUN)
 - `chain/` — цепочка «внешний AWG-туннель → WARP → Psiphon»: запуск внешнего warp-plus и проверка SOCKS5
-- `core/` — самодостаточный пайплайн `run`: автомат состояний (endpoint → туннель → форвардер → страны → мониторинг), UDP-форвардер, события
+- `core/` — самодостаточный пайплайн `run`: автомат состояний (endpoint → туннель → форвардер → страны → мониторинг; либо SOCKS5 поверх туннеля в `--warp-only`), UDP-форвардер, локальный SOCKS5-сервер, события
 - `vpn/` — системный туннель `--tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и их откат (Linux)
 - `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `gen`, `chain`, `run`)
 

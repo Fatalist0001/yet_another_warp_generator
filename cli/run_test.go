@@ -47,7 +47,7 @@ func TestRunHelpWorks(t *testing.T) {
 			t.Errorf("run --help: %v", err)
 		}
 	})
-	for _, flag := range []string{"-countries", "-endpoints", "-bind", "-warp-plus", "-cache-dir", "-json", "-listen"} {
+	for _, flag := range []string{"-countries", "-endpoints", "-bind", "-warp-plus", "-cache-dir", "-json", "-listen", "-warp-only"} {
 		if !strings.Contains(stdout, flag) {
 			t.Errorf("в справке нет флага %s:\n%s", flag, stdout)
 		}
@@ -71,6 +71,24 @@ func TestRunEmptyCountries(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "стран") {
 			t.Errorf("текст ошибки = %q", err)
+		}
+	})
+}
+
+// В режиме без Psiphon страны не нужны, но аккаунт по-прежнему обязателен: пустой
+// список стран доходит до preflight и падает на аккаунте, а не на странах.
+func TestRunWarpOnlyNeedsOnlyAccount(t *testing.T) {
+	account := filepath.Join(t.TempDir(), "нет-такого-аккаунта.json")
+	captureOutput(t, func() {
+		err := runRun([]string{"--warp-only", "--countries", "", "--account", account})
+		if err == nil {
+			t.Fatal("без аккаунта должен быть отказ preflight")
+		}
+		if !strings.Contains(err.Error(), "аккаунт") {
+			t.Errorf("текст ошибки = %q, ожидали жалобу на аккаунт", err)
+		}
+		if strings.Contains(err.Error(), "стран") {
+			t.Errorf("в режиме --warp-only страны не нужны: %q", err)
 		}
 	})
 }

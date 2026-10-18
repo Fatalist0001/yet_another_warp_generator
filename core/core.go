@@ -1,8 +1,10 @@
 // Package core — самодостаточный пайплайн `warpgen run`.
 //
 // Одна команда без root, TUN и сторонних VPN-клиентов поднимает внешний
-// AWG-туннель внутри процесса, пускает через него UDP внутреннего WARP (локальный
-// форвардер), запускает поверх warp-plus с Psiphon и отдаёт SOCKS5 с выходом вне РФ.
+// AWG-туннель внутри процесса и отдаёт наружу SOCKS5. По умолчанию поверх него
+// поднимается warp-plus с Psiphon (UDP внутреннего WARP идёт через локальный
+// форвардер) — выход вне РФ. В режиме Direct (WarpOnly) Psiphon не запускается:
+// наружу отдаётся сам WARP-туннель с обфускацией AWG.
 //
 // Пакет спроектирован как библиотека — CLI (а позже GUI и мобильные клиенты) это
 // только оболочка. Внутри нет os.Exit, чтения stdin, печати в stdout и глобального
@@ -171,10 +173,18 @@ type Config struct {
 	InnerEndpoint string
 	// Listen — локальный адрес UDP-форвардера (loopback, порт 0 — свободный).
 	Listen string
-	// Countries — страны Psiphon в порядке приоритета.
+	// Countries — страны Psiphon в порядке приоритета (в режиме Direct не нужны).
 	Countries []string
 	// Endpoints — сколько кандидатов внешних endpoint'ов использовать.
 	Endpoints int
+
+	// Direct — режим без Psiphon: наружу отдаётся локальный SOCKS5 поверх самого
+	// внешнего WARP-туннеля (обфускация AWG сохраняется), без warp-plus, стран и
+	// внутреннего WARP. Выход при этом российский: так Cloudflare видит клиента
+	// из РФ, а задача режима — приватность канала, а не смена страны.
+	Direct bool
+	// Bind — адрес локального SOCKS5 в режиме Direct (только loopback).
+	Bind string
 
 	// Tunnel / Locator / Chain / Prober / Clock — внешние зависимости.
 	Tunnel  TunnelFactory
@@ -220,6 +230,9 @@ func (c Config) withDefaults() Config {
 	if c.Endpoints <= 0 {
 		c.Endpoints = DefaultEndpoints
 	}
+	if c.Direct && strings.TrimSpace(c.Bind) == "" {
+		c.Bind = DefaultSocksListen
+	}
 	if c.Clock == nil {
 		c.Clock = realClock{}
 	}
@@ -250,16 +263,18 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// validate проверяет, что заданы обязательные зависимости.
+// validate проверяет, что заданы обязательные зависимости. В режиме Direct
+// (без Psiphon) список стран и запуск цепочки не нужны: наружу отдаётся SOCKS5
+// поверх самого туннеля.
 func (c Config) validate() error {
 	switch {
-	case len(c.Countries) == 0:
+	case len(c.Countries) == 0 && !c.Direct:
 		return errors.New("core: не задан список стран (--countries)")
 	case c.Tunnel == nil:
 		return errors.New("core: не задан фабрикатор туннеля (Tunnel)")
 	case c.Locator == nil:
 		return errors.New("core: не задан поиск endpoint (Locator)")
-	case c.Chain == nil:
+	case c.Chain == nil && !c.Direct:
 		return errors.New("core: не задан запуск цепочки (Chain)")
 	}
 	if strings.TrimSpace(c.InnerEndpoint) == "" {
