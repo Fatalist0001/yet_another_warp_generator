@@ -1,0 +1,17 @@
+# Правила анализа для GUI: стандартный набор Flutter плюс пара уточнений.
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    - build/**
+    - linux/**
+  language:
+    strict-casts: true
+    strict-raw-types: true
+
+linter:
+  rules:
+    - prefer_single_quotes
+    - avoid_print
+    - unawaited_futures
+    - use_super_parameters

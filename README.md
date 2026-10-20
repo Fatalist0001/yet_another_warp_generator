@@ -425,6 +425,45 @@ WARPGEN_INTEGRATION=1 go test -tags integration ./cli/ -run Integration -v
 WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run IntegrationChain -v
 ```
 
+## GUI для Linux (Flutter, Material You)
+
+`gui/` — тонкая обёртка над CLI: окно в стиле Material You (Material 3,
+`ColorScheme.fromSeed`) для туннеля, скана и аккаунта. Ядро **не** вшито в
+приложение: GUI запускает тот же бинарник `warpgen` и читает его машинный вывод
+(`run --json`, `scan --json`). Поэтому туннель остаётся userspace, root не нужен, а
+поведение такое же, как в терминале.
+
+```bash
+make build           # GUI запускает готовый бинарник
+make gui-deps        # flutter pub get
+make gui-run         # запустить окно (нужен Flutter SDK и GTK3 dev-пакеты)
+make gui-test        # офлайн-тесты GUI: без сети и без реальных процессов
+make gui-analyze     # flutter analyze
+make gui-build       # релизная сборка Linux-приложения
+```
+
+| Раздел | Что делает |
+|---|---|
+| Туннель | подключить/отключить `warpgen run`, режим WARP (`--warp-only`) или WARP + Psiphon, страны, адрес SOCKS5, живой журнал событий |
+| Скан | `warpgen scan` с прогрессом, список подходящих endpoint'ов и кнопка «Создать .conf» |
+| Аккаунт | регистрация и перерегистрация WARP, путь к файлу аккаунта |
+
+Где что лежит:
+
+- конфиги из GUI — `~/.warpgen/conf/warp-<ip>_<port>.conf`;
+- identity warp-plus и кэш Psiphon — `~/.warpgen/chain` (как у CLI);
+- аккаунт — рядом с бинарником `warpgen` (или `WARPGEN_ACCOUNT`);
+- бинарник ищется в `WARPGEN_BIN`, затем в `PATH`, затем в текущем каталоге; если
+  не найден, GUI просит путь и больше ничего не делает.
+
+Остановка — SIGINT: Go успевает снять туннель, форвардер и дочерние процессы;
+SIGKILL уходит только если процесс не вышел за 10 секунд. Закрытие окна делает то
+же самое.
+
+Для сборки GUI нужны Flutter SDK (desktop Linux) и GTK3 dev-пакеты (`libgtk-3-dev`,
+`ninja-build`, `clang`, `cmake`, `pkg-config`). SDK можно держать прямо в корне
+проекта каталогом `.toolchain/` — он в `.gitignore`.
+
 ## Структура пакетов
 
 - `registration/` — неофициальный API Cloudflare, регистрация WARP, локальное хранение аккаунта
@@ -482,7 +521,7 @@ WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run Inte
 
 - Split-tunneling
 - Кастомный клиент AmneziaWG
-- GUI / кроссплатформенная программа
+- Кроссплатформенная программа (GUI есть только для Linux)
 - Релеи, warp-in-warp, MASQUE
 
 ## Лицензия

@@ -32,8 +32,18 @@ coverage.out
 # Релизный бинарник warp-plus (20 МБ), который warpgen ищет рядом с собой
 /warp-plus
 
-# --- ОС и редакторы ---
+# --- GUI (Flutter) ---
+# Локальный SDK Flutter (ставится в корень проекта, чтобы не занимать основной диск)
+/.toolchain/
 
+# Артефакты сборки Flutter-приложения
+/gui/build/
+/gui/.dart_tool/
+/gui/.flutter-plugins
+/gui/.flutter-plugins-dependencies
+/gui/linux/flutter/ephemeral/
+
+# --- ОС и редакторы ---
 .DS_Store
 *.swp
 

@@ -23,6 +23,11 @@ make fmt              # gofmt -l . (показать неотформатиро�
 make checks           # vet + fmt + test
 make test-integration # реальная сеть, за флагом (в CI не гонять)
 make test-e2e         # сетевые проверки пайплайна run (тег e2e, вручную)
+make gui-deps         # flutter pub get для gui/
+make gui-test         # офлайн-тесты GUI (фейковые процессы, без сети)
+make gui-analyze      # flutter analyze
+make gui-run          # запустить GUI (нужны Flutter SDK и GTK3 dev)
+make gui-build        # релизная сборка Linux-приложения
 make clean            # удалить артефакты сборки
 ```
 
@@ -58,9 +63,27 @@ GOPROXY=off go test ./... -short
 | `vpn/` | системный туннель `run --tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и откат (Linux) |
 | `cli/` | CLI-команды `register`, `scan`, `dns-check`, `gen`, `chain`, `run`, `tun-revert` |
 | `cmd/warpgen/` | точка входа, версия (подставляется через ldflags) |
+| `gui/` | Flutter/GUI для Linux (Material You): обёртка над CLI, своей сетевой логики нет |
 
 Правило: логика — в пакетах, `cli/` только собирает их вместе и печатает.
 Внутренние детали (`internal/`) не заводим — это локальный инструмент.
+
+### GUI (пакет `gui/`, Flutter)
+
+- GUI — только оболочка: он запускает бинарник `warpgen` и разбирает его машинный
+  вывод (`run --json` — NDJSON, `scan --json` — один документ). Логику туннеля,
+  скана и конфигов в Dart не переносить: второй реализации быть не должно.
+- Процессы запускаются только через `ProcessRunner` (`gui/lib/src/platform/`),
+  фейки — `gui/test/support/fakes.dart`. Тесты GUI — офлайн: без сети, без реальных
+  процессов и без root. Новый системный эффект — только через этот интерфейс.
+- Остановка — SIGINT (Go успевает снять туннель и дочерние процессы), SIGKILL —
+  только по таймауту. Никаких `os.Exit`-подобных решений в контроллерах.
+- Приватный ключ аккаунта в интерфейс не попадает: `AccountInfo` его не содержит,
+  в журнал и snackbar’ы уходят только адреса, страны и пути к файлам.
+- Тема — Material 3 (`useMaterial3`, `ColorScheme.fromSeed`), без внешних
+  UI-пакетов. Новые зависимости — только по явной необходимости.
+- SDK Flutter локальный: `.toolchain/` в корне проекта и в `.gitignore`; основной
+  диск трогать не нужно.
 
 ## Жёсткие инварианты — не ломать
 
