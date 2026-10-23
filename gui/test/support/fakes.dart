@@ -55,6 +55,7 @@ class FakeProcess implements RunningProcess {
   final _exit = Completer<int>();
 
   bool interrupted = false;
+  bool stopRequested = false;
   bool killed = false;
 
   @override
@@ -68,6 +69,9 @@ class FakeProcess implements RunningProcess {
 
   @override
   void sendInterrupt() => interrupted = true;
+
+  @override
+  void requestStop() => stopRequested = true;
 
   @override
   void kill() => killed = true;
@@ -95,6 +99,8 @@ WarpgenCli fakeCli({
   String binaryPath = '/opt/warpgen/warpgen',
   String accountFile = '/opt/warpgen/warpgen-account.json',
   String? cacheDir,
+  String? elevDir,
+  String? stopFile,
 }) {
   return WarpgenCli(
     runner: runner,
@@ -104,6 +110,8 @@ WarpgenCli fakeCli({
       source: 'тест',
     ),
     cacheDir: cacheDir,
+    elevDir: elevDir,
+    stopFile: stopFile,
   );
 }
 

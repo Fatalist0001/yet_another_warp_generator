@@ -32,6 +32,12 @@ abstract class RunningProcess {
   /// Мягкая остановка (SIGINT): Go-пайплайн успевает снять маршруты и ресурсы.
   void sendInterrupt();
 
+  /// Остановка с учётом прав процесса.
+  ///
+  /// По умолчанию это SIGINT, но процесс под root (`--tun` через pkexec) сигнал
+  /// от непривилегированного GUI не получит: там остановка идёт файлом-сигналом.
+  void requestStop() => sendInterrupt();
+
   /// Жёсткая остановка (SIGKILL) — запасной вариант, если SIGINT не помог.
   void kill();
 }
@@ -75,6 +81,9 @@ class IoRunningProcess implements RunningProcess {
 
   @override
   void sendInterrupt() => _process.kill(ProcessSignal.sigint);
+
+  @override
+  void requestStop() => sendInterrupt();
 
   @override
   void kill() => _process.kill(ProcessSignal.sigkill);

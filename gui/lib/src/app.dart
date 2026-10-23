@@ -152,6 +152,12 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
         runner: widget.runner,
         location: location,
         cacheDir: '$_homeDir/.warpgen/chain',
+        // AppImage смонтирован только для пользователя: root не прочитает
+        // бинарник, а pkexec проверяет доступ до запроса пароля.
+        elevDir: '$_homeDir/.warpgen/elev',
+        // Процесс под pkexec — root, SIGINT из GUI ему недоступен: остановка
+        // идёт файлом, который CLI проверяет сам.
+        stopFile: '$_homeDir/.warpgen/run/tun.stop',
       ),
       homeDir: _homeDir,
     );

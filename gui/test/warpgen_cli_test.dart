@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:warpgen_gui/src/platform/process_runner.dart';
+import 'package:warpgen_gui/src/platform/warpgen_locator.dart';
 import 'package:warpgen_gui/src/services/warpgen_cli.dart';
 
 import 'support/fakes.dart';
@@ -62,6 +64,108 @@ void main() {
         '--cache-dir',
         '/home/tester/.warpgen/chain',
       ]);
+    });
+
+    test('для root берёт копию бинарника, а не файл AppImage', () async {
+      final temp = Directory.systemTemp.createTempSync('warpgen-elev-test');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final source = Directory('${temp.path}/appimage')..createSync();
+      final binary = File('${source.path}/warpgen')
+        ..writeAsStringSync('#!/bin/sh\n');
+      File('${source.path}/warp-plus').writeAsStringSync('#!/bin/sh\n# plus\n');
+      final elev = '${temp.path}/elev';
+
+      final runner = FakeProcessRunner();
+      final cli = fakeCli(
+        runner: runner,
+        binaryPath: binary.path,
+        accountFile: '${temp.path}/account.json',
+        cacheDir: '/home/tester/.warpgen/chain',
+        elevDir: elev,
+      );
+      runner.enqueue();
+
+      await cli.startRun(
+        warpOnly: true,
+        countries: const ['NL'],
+        bind: '127.0.0.1:8086',
+        tun: true,
+      );
+
+      final invocation = runner.invocations.single;
+      expect(invocation.executable, 'pkexec');
+      expect(invocation.arguments.first, '$elev/warpgen');
+      expect(invocation.arguments, isNot(contains(binary.path)),
+          reason: 'AppImage доступен только пользователю, root его не прочитает');
+      expect(File('$elev/warpgen').readAsStringSync(), '#!/bin/sh\n');
+      expect(File('$elev/warp-plus').existsSync(), isTrue,
+          reason: 'warp-plus ищется рядом с warpgen');
+    });
+
+    test('root-процесс останавливается файлом-сигналом, а не SIGINT', () async {
+      final temp = Directory.systemTemp.createTempSync('warpgen-stop-test');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final stopFile = '${temp.path}/run/tun.stop';
+      Directory('${temp.path}/run').createSync(recursive: true);
+      File(stopFile).writeAsStringSync('прошлый запуск');
+
+      final runner = FakeProcessRunner();
+      final cli = fakeCli(
+        runner: runner,
+        cacheDir: '/home/tester/.warpgen/chain',
+        stopFile: stopFile,
+      );
+      final inner = runner.enqueue();
+
+      final process = await cli.startRun(
+        warpOnly: true,
+        countries: const ['NL'],
+        bind: '127.0.0.1:8086',
+        tun: true,
+      );
+
+      final args = runner.invocations.single.arguments;
+      expect(args, containsAllInOrder(['--stop-file', stopFile]));
+      expect(
+        File(stopFile).existsSync(),
+        isFalse,
+        reason: 'старый файл удалён до запуска',
+      );
+
+      process.requestStop();
+      expect(File(stopFile).readAsStringSync(), 'stop');
+      expect(
+        inner.interrupted,
+        isTrue,
+        reason: 'сигнал тоже отправляется, но для root он не сработает',
+      );
+    });
+
+    test('без pkexec объясняет, что нужен polkit', () async {
+      final cli = WarpgenCli(
+        runner: _MissingExecRunner(),
+        location: const WarpgenLocation(
+          binaryPath: '/opt/warpgen/warpgen',
+          accountFile: '/opt/warpgen/warpgen-account.json',
+          source: 'тест',
+        ),
+      );
+
+      await expectLater(
+        cli.startRun(
+          warpOnly: true,
+          countries: const ['NL'],
+          bind: '127.0.0.1:8086',
+          tun: true,
+        ),
+        throwsA(
+          isA<WarpgenException>().having(
+            (error) => error.message,
+            'message',
+            contains('polkit'),
+          ),
+        ),
+      );
     });
 
     test('с Psiphon --cache-dir передаётся и без системного туннеля', () async {
@@ -235,4 +339,17 @@ void main() {
       expect(await cli.readAccount(), isNull);
     });
   });
+}
+
+/// Раннер, у которого нет `pkexec` (как на системе без polkit).
+class _MissingExecRunner implements ProcessRunner {
+  @override
+  Future<RunningProcess> start(
+    String executable,
+    List<String> arguments, {
+    String? workingDirectory,
+    Map<String, String>? environment,
+  }) {
+    throw ProcessException(executable, arguments, 'No such file or directory');
+  }
 }

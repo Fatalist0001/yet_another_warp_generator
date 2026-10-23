@@ -58,6 +58,7 @@ func runRun(args []string) error {
 	dns := fs.String("dns", vpn.DefaultDNS, "резолверы для DNS через цепочку (ip[:port] через запятую)")
 	udp := fs.String("udp", string(vpn.UDPDrop), "политика UDP: drop — отбрасывать (QUIC ломается, приложения уходят на TCP)")
 	dryRun := fs.Bool("dry-run", false, "показать системные команды и ничего не менять (с --tun)")
+	stopFile := fs.String("stop-file", "", "файл-сигнал остановки: появление файла завершает пайплайн (для GUI под pkexec)")
 	jsonOut := fs.Bool("json", false, "события строками JSON (по одному объекту в строке)")
 	debug := fs.Bool("debug", false, "подробный вывод (в stderr)")
 	if err := fs.Parse(args); err != nil {
@@ -116,6 +117,7 @@ func runRun(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go watchStopFile(ctx, *stopFile, stop, 0)
 
 	events, err := core.Run(ctx, cfg)
 	if err != nil {

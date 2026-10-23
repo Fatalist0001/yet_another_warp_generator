@@ -1,8 +1,9 @@
 /// Управление пайплайном `warpgen run` и его состоянием для интерфейса.
 ///
 /// Контроллер не печатает и не завершает процесс сам: остановка — мягкая
-/// (SIGINT), чтобы Go успел снять туннель и форвардер, а SIGKILL остаётся
-/// запасным вариантом по таймауту.
+/// (SIGINT, а для root-процесса под pkexec — файл-сигнал), чтобы Go успел
+/// снять туннель и форвардер, а SIGKILL остаётся запасным вариантом по
+/// таймауту.
 library;
 
 import 'dart:async';
@@ -55,6 +56,7 @@ class TunnelController extends ChangeNotifier {
   String _detail = 'Подключитесь, чтобы получить локальный SOCKS5';
   String? _failure;
   String? _lastError;
+  String? _lastStderr;
   String? _socks;
   String? _country;
   String? _ip;
@@ -225,7 +227,8 @@ class TunnelController extends ChangeNotifier {
     }
   }
 
-  /// Останавливает пайплайн: SIGINT, затем SIGKILL по таймауту.
+  /// Останавливает пайплайн: мягкий сигнал (для root — файл), затем SIGKILL
+  /// по таймауту.
   Future<void> stop() async {
     _stopRequested = true;
     final process = _process;
@@ -240,7 +243,19 @@ class TunnelController extends ChangeNotifier {
       'снимаем туннель и форвардер',
     );
     notifyListeners();
-    process.sendInterrupt();
+    try {
+      process.requestStop();
+    } on FileSystemException catch (error) {
+      _setStatus(
+        TunnelStatus.failed,
+        'Не удалось остановить',
+        'процесс мог остаться с поднятым туннелем',
+      );
+      _failure = 'не удалось остановить туннель: ${error.message}';
+      _addJournal(_failure!, EventSeverity.error);
+      notifyListeners();
+      return;
+    }
     try {
       await process.exitCode.timeout(const Duration(seconds: 10));
     } on TimeoutException {
@@ -248,12 +263,16 @@ class TunnelController extends ChangeNotifier {
     }
   }
 
-  /// Мягкая остановка при закрытии окна: ждать некому, но SIGINT хватает.
+  /// Мягкая остановка при закрытии окна: ждать некому, но сигнала хватает.
   void shutdown() {
     final process = _process;
     if (process == null) return;
     _stopRequested = true;
-    process.sendInterrupt();
+    try {
+      process.requestStop();
+    } on FileSystemException {
+      // Закрываемся: показать ошибку уже некому, остаётся SIGKILL по таймеру.
+    }
     Timer(const Duration(seconds: 5), process.kill);
   }
 
@@ -277,6 +296,7 @@ class TunnelController extends ChangeNotifier {
   void _resetRun() {
     _failure = null;
     _lastError = null;
+    _lastStderr = null;
     _socks = null;
     _country = null;
     _ip = null;
@@ -306,6 +326,9 @@ class TunnelController extends ChangeNotifier {
   void _onStderr(String line) {
     final text = line.trimRight();
     if (text.trim().isEmpty) return;
+    // pkexec пишет причину отказа сюда (нет агента polkit, нет доступа к
+    // бинарнику), а не в поток событий — показываем её в карточке ошибки.
+    _lastStderr = text.trim();
     _addJournal(text, EventSeverity.info, isDiagnostic: true);
   }
 
@@ -437,15 +460,29 @@ class TunnelController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    // pkexec: 126 — пользователь отменил диалог, 127 — прав нет вовсе.
+    // pkexec: 126 — пользователь отменил диалог, 127 — ошибка до или после
+    // запроса пароля (нет агента polkit, недоступный бинарник и т.п.).
     if (_lastError == null && _tun && (code == 126 || code == 127)) {
-      _fail(
-        'отказ в правах root: подтвердите системный диалог пароля '
-        'или запустите без системного туннеля',
-      );
+      _fail(_rootFailure(code));
       return;
     }
     _fail(_lastError ?? 'warpgen завершился с кодом $code');
+  }
+
+  /// Объясняет отказ `pkexec` так, чтобы причину было видно в интерфейсе.
+  String _rootFailure(int code) {
+    if (code == 126) {
+      return 'отказ в правах root: диалог пароля отменён';
+    }
+    final stderr = _lastStderr;
+    if (stderr != null && stderr.contains('No authentication agent')) {
+      return 'нет агента аутентификации polkit: запустите polkit-gnome, '
+          'polkit-kde-agent или lxpolkit и повторите';
+    }
+    if (stderr != null && stderr.isNotEmpty) {
+      return 'не удалось получить права root: $stderr';
+    }
+    return 'не удалось получить права root: проверьте журнал и повторите';
   }
 
   Future<void> _drainStreams() async {

@@ -56,7 +56,7 @@ void main() {
 
     final stopFuture = tunnel.stop();
     await flushEvents();
-    expect(process.interrupted, isTrue);
+    expect(process.stopRequested, isTrue);
     expect(tunnel.status, TunnelStatus.stopping);
 
     await process.finish(0);
@@ -101,6 +101,40 @@ void main() {
 
     expect(tunnel.status, TunnelStatus.failed);
     expect(tunnel.failure, contains('root'));
+    expect(tunnel.failure, contains('диалог'));
+  });
+
+  test('ошибку pkexec видно в карточке, а не только в журнале', () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(cli: fakeCli(runner: runner));
+    tunnel.setTun(true);
+    final process = runner.enqueue();
+
+    await tunnel.start();
+    process.emitDiagnostic(
+      'Error accessing /tmp/.mount_x/usr/bin/warpgen: Permission denied',
+    );
+    await process.finish(127);
+    await flushEvents();
+
+    expect(tunnel.status, TunnelStatus.failed);
+    expect(tunnel.failure, contains('Permission denied'));
+  });
+
+  test('отсутствие агента polkit объясняется подсказкой', () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(cli: fakeCli(runner: runner));
+    tunnel.setTun(true);
+    final process = runner.enqueue();
+
+    await tunnel.start();
+    process.emitDiagnostic('Error executing command as another user: '
+        'No authentication agent found.');
+    await process.finish(127);
+    await flushEvents();
+
+    expect(tunnel.status, TunnelStatus.failed);
+    expect(tunnel.failure, contains('polkit'));
   });
 
   test('события системного туннеля доводят состояние до «подключено»',

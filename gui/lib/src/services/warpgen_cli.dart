@@ -9,6 +9,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../models/scan_report.dart';
+import '../platform/elevated_binary.dart';
+import '../platform/elevated_process.dart';
 import '../platform/process_runner.dart';
 import '../platform/warpgen_locator.dart';
 
@@ -57,13 +59,33 @@ class AccountInfo {
 
 /// Команды warpgen, нужные интерфейсу.
 class WarpgenCli {
-  WarpgenCli({required this.runner, required this.location, this.cacheDir});
+  WarpgenCli({
+    required this.runner,
+    required this.location,
+    this.cacheDir,
+    this.elevDir,
+    this.stopFile,
+  });
 
   final ProcessRunner runner;
   final WarpgenLocation location;
 
   /// Каталог identity warp-plus (по умолчанию его выбирает сам CLI).
   final String? cacheDir;
+
+  /// Каталог копии бинарника для root (`--tun`).
+  ///
+  /// AppImage лежит на FUSE-монтировании, доступном только пользователю, а
+  /// `pkexec` проверяет доступ до запроса пароля. Пусто — запускать как есть
+  /// (тесты и окружения, где бинарник и так доступен root).
+  final String? elevDir;
+
+  /// Файл-сигнал остановки для процесса под root (`--tun`).
+  ///
+  /// `pkexec` работает как root, и SIGINT от GUI до него не доходит. GUI
+  /// создаёт этот файл, а CLI замечает его и завершает пайплайн сам, успев
+  /// снять TUN и маршруты. Пусто — остановка только сигналом.
+  final String? stopFile;
 
   String get binaryPath => location.binaryPath;
 
@@ -81,10 +103,9 @@ class WarpgenCli {
     required List<String> countries,
     required String bind,
     bool tun = false,
-  }) {
-    final command = <String>[
-      if (tun) 'pkexec',
-      binaryPath,
+  }) async {
+    final stop = tun ? await _prepareStopFile() : null;
+    final args = <String>[
       'run',
       '--json',
       '--account',
@@ -102,8 +123,52 @@ class WarpgenCli {
         '--cache-dir',
         cacheDir!
       ],
+      if (stop != null) ...['--stop-file', stop],
     ];
-    return runner.start(command.first, command.skip(1).toList());
+    if (!tun) return runner.start(binaryPath, args);
+
+    final executable = await _elevatedBinary();
+    try {
+      final process = await runner.start('pkexec', [executable, ...args]);
+      if (stop == null) return process;
+      return ElevatedRunningProcess(process, stopFile: stop);
+    } on ProcessException catch (error) {
+      throw WarpgenException(
+        'pkexec не запустился: ${error.message}. '
+        'Системному туннелю нужен polkit (пакет polkitd/policykit-1).',
+      );
+    }
+  }
+
+  /// Готовит файл-сигнал остановки: stale-файл от прошлого прогона удаляется,
+  /// иначе новый root-процесс завершится сразу после старта.
+  Future<String?> _prepareStopFile() async {
+    final path = stopFile?.trim();
+    if (path == null || path.isEmpty) return null;
+    try {
+      final file = File(path);
+      await file.parent.create(recursive: true);
+      if (await file.exists()) await file.delete();
+    } on FileSystemException catch (error) {
+      throw WarpgenException(
+        'не удалось подготовить файл остановки: ${error.message}',
+      );
+    }
+    return path;
+  }
+
+  /// Путь к бинарнику, который сможет прочитать root.
+  Future<String> _elevatedBinary() async {
+    final dir = elevDir?.trim();
+    if (dir == null || dir.isEmpty) return binaryPath;
+    try {
+      return await ElevatedBinary(sourcePath: binaryPath, targetDir: dir)
+          .prepare();
+    } on FileSystemException catch (error) {
+      throw WarpgenException(
+        'не удалось подготовить копию warpgen для root: ${error.message}',
+      );
+    }
   }
 
   /// Сканирует endpoint'ы. Отчёт приходит одним JSON-документом в конце.
