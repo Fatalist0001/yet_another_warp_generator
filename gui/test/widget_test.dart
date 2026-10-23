@@ -153,4 +153,31 @@ void main() {
     // Аккаунта нет — кнопка подключения недоступна и есть подсказка.
     expect(find.textContaining('зарегистрируйте аккаунт'), findsOneWidget);
   });
+
+  testWidgets('переключатель системного туннеля меняет состояние контроллера',
+      (tester) async {
+    _useTallWindow(tester);
+    final runner = FakeProcessRunner();
+    final cli = fakeCli(runner: runner);
+    final tunnel = TunnelController(cli: cli);
+    final account = AccountController(cli: cli);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: Scaffold(
+          body: TunnelPage(tunnel: tunnel, account: account),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Системный туннель (root)'), findsOneWidget);
+    expect(tunnel.tun, isFalse);
+
+    await tester.tap(find.text('Системный туннель (root)'));
+    await tester.pump();
+
+    expect(tunnel.tun, isTrue);
+  });
 }

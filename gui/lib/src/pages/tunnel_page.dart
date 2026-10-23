@@ -426,6 +426,21 @@ class _ModeCardState extends State<_ModeCard> {
               ],
             ),
           ],
+          const SizedBox(height: 8),
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            value: tunnel.tun,
+            onChanged: enabled ? (value) => tunnel.setTun(value) : null,
+            title: const Text('Системный туннель (root)'),
+            subtitle: Text(
+              'Весь трафик машины идёт по цепочке через TUN-устройство и маршруты '
+              '(включается режим kill switch). Нужен root — спросим пароль системы. '
+              'Посторонний VPN лучше выключить.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
           const SizedBox(height: 20),
           TextField(
             controller: _bind,

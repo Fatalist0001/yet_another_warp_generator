@@ -72,26 +72,38 @@ class WarpgenCli {
   /// Запускает пайплайн `run` и отдаёт процесс с потоком событий.
   ///
   /// `warpOnly` — режим без Psiphon (SOCKS5 поверх WARP-туннеля).
+  /// `tun` — системный туннель: TUN-устройство и маршруты машины, поэтому CLI
+  /// должен работать под root и запускается через `pkexec`. В этом режиме
+  /// `--cache-dir` передаётся всегда: под root переменная `HOME` указывает на
+  /// каталог администратора, и без явного пути identity warp-plus уедет туда.
   Future<RunningProcess> startRun({
     required bool warpOnly,
     required List<String> countries,
     required String bind,
+    bool tun = false,
   }) {
-    final args = <String>[
+    final command = <String>[
+      if (tun) 'pkexec',
+      binaryPath,
       'run',
       '--json',
       '--account',
       accountFile,
       '--bind',
       bind,
+      if (tun) '--tun',
+      if (warpOnly)
+        '--warp-only'
+      else ...[
+        '--countries',
+        countries.join(','),
+      ],
+      if (_filled(cacheDir) && (!warpOnly || tun)) ...[
+        '--cache-dir',
+        cacheDir!
+      ],
     ];
-    if (warpOnly) {
-      args.add('--warp-only');
-    } else {
-      args.addAll(['--countries', countries.join(',')]);
-      if (_filled(cacheDir)) args.addAll(['--cache-dir', cacheDir!]);
-    }
-    return runner.start(binaryPath, args);
+    return runner.start(command.first, command.skip(1).toList());
   }
 
   /// Сканирует endpoint'ы. Отчёт приходит одним JSON-документом в конце.

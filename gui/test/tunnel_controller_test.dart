@@ -67,6 +67,75 @@ void main() {
     expect(tunnel.headline, 'Туннель выключен');
   });
 
+  test(
+      'системный туннель уходит в CLI через pkexec и не меняется во время работы',
+      () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(cli: fakeCli(runner: runner));
+
+    tunnel.setTun(true);
+    expect(tunnel.tun, isTrue);
+
+    runner.enqueue();
+    await tunnel.start();
+
+    final invocation = runner.invocations.single;
+    expect(invocation.executable, 'pkexec');
+    expect(invocation.arguments.first, '/opt/warpgen/warpgen');
+    expect(invocation.arguments, contains('run'));
+    expect(invocation.arguments, contains('--tun'));
+
+    tunnel.setTun(false);
+    expect(tunnel.tun, isTrue, reason: 'настройки не меняются во время работы');
+  });
+
+  test('отказ pkexec объясняет, что не хватает прав root', () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(cli: fakeCli(runner: runner));
+    tunnel.setTun(true);
+    final process = runner.enqueue();
+
+    await tunnel.start();
+    await process.finish(126); // pkexec: пользователь отменил диалог
+    await flushEvents();
+
+    expect(tunnel.status, TunnelStatus.failed);
+    expect(tunnel.failure, contains('root'));
+  });
+
+  test('события системного туннеля доводят состояние до «подключено»',
+      () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(cli: fakeCli(runner: runner));
+    tunnel.setTun(true);
+    final process = runner.enqueue();
+
+    await tunnel.start();
+    process
+      ..emitEvent(const {
+        'event': 'ready',
+        'socks': '127.0.0.1:8086',
+        'ip': '203.0.113.9',
+      })
+      ..emitEvent(const {'event': 'tun_up', 'tun': 'warpgen0', 'mtu': 1280})
+      ..emitEvent(const {
+        'event': 'routes_applied',
+        'tun': 'warpgen0',
+        'routes': 4,
+      })
+      ..emitEvent(const {'event': 'dns_selected', 'dns': '1.1.1.1'});
+    await flushEvents();
+
+    expect(tunnel.status, TunnelStatus.live);
+    expect(tunnel.detail, contains('весь трафик машины'));
+    expect(tunnel.dns, '1.1.1.1');
+    expect(
+      tunnel.journal.any((entry) => entry.text.contains('warpgen0')),
+      isTrue,
+      reason: 'маршруты и TUN должны быть в журнале',
+    );
+  });
+
   test('событие stopped с ошибкой и код 1 дают состояние failed', () async {
     final runner = FakeProcessRunner();
     final tunnel = TunnelController(cli: fakeCli(runner: runner));

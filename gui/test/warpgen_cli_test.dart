@@ -32,7 +32,39 @@ void main() {
       expect(args, isNot(contains('--cache-dir')));
     });
 
-    test('в режиме с Psiphon передаёт страны и cache-dir', () async {
+    test('системный туннель идёт через pkexec с --tun и --cache-dir', () async {
+      final runner = FakeProcessRunner();
+      final cli = fakeCli(
+        runner: runner,
+        cacheDir: '/home/tester/.warpgen/chain',
+      );
+      runner.enqueue();
+
+      await cli.startRun(
+        warpOnly: true,
+        countries: const ['NL'],
+        bind: '127.0.0.1:8086',
+        tun: true,
+      );
+
+      final invocation = runner.invocations.single;
+      expect(invocation.executable, 'pkexec');
+      expect(invocation.arguments, [
+        '/opt/warpgen/warpgen',
+        'run',
+        '--json',
+        '--account',
+        '/opt/warpgen/warpgen-account.json',
+        '--bind',
+        '127.0.0.1:8086',
+        '--tun',
+        '--warp-only',
+        '--cache-dir',
+        '/home/tester/.warpgen/chain',
+      ]);
+    });
+
+    test('с Psiphon --cache-dir передаётся и без системного туннеля', () async {
       final runner = FakeProcessRunner();
       final cli = fakeCli(
         runner: runner,

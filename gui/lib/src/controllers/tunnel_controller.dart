@@ -66,6 +66,7 @@ class TunnelController extends ChangeNotifier {
   DateTime? _readyAt;
   Duration? _prepareTime;
   bool _warpOnly = true;
+  bool _tun = false;
   List<String> _countries = List<String>.of(defaultCountries);
   String _bind = defaultBind;
   final List<JournalEntry> _journal = [];
@@ -118,6 +119,19 @@ class TunnelController extends ChangeNotifier {
 
   /// Режим без Psiphon.
   bool get warpOnly => _warpOnly;
+
+  /// Системный туннель (root): TUN-устройство и маршруты, весь трафик машины.
+  ///
+  /// Без него пайплайн поднимает только локальный SOCKS5 на 127.0.0.1 —
+  /// адрес в интернете для программ, которые не используют прокси, не меняется.
+  bool get tun => _tun;
+
+  /// Включает или выключает системный туннель.
+  void setTun(bool value) {
+    if (isRunning || _tun == value) return;
+    _tun = value;
+    notifyListeners();
+  }
 
   /// Страны Psiphon в порядке приоритета.
   List<String> get countries => List<String>.unmodifiable(_countries);
@@ -199,6 +213,7 @@ class TunnelController extends ChangeNotifier {
         warpOnly: _warpOnly,
         countries: _countries,
         bind: _bind.trim(),
+        tun: _tun,
       );
       _process = process;
       _stdoutDone = process.stdout.forEach(_onStdout);
@@ -354,6 +369,17 @@ class TunnelController extends ChangeNotifier {
       case 'dns_selected':
         _dns = event.dns;
         break;
+      case 'tun_up':
+        // Системный туннель поднялся; маршруты применяются после ready.
+        _setStatus(
+          TunnelStatus.starting,
+          'Системный туннель поднят',
+          '${event.tun ?? 'TUN'}: настраиваем маршруты и DNS',
+        );
+        break;
+      case 'routes_applied':
+        _setStatus(TunnelStatus.live, 'Подключено', _liveDetail());
+        break;
       case 'dns_failed':
         _detail = 'DNS не настроен: ${event.reason ?? 'причина неизвестна'}';
         break;
@@ -382,6 +408,7 @@ class TunnelController extends ChangeNotifier {
     if ((_country ?? '').isNotEmpty) parts.add('страна $_country');
     if ((_ip ?? '').isNotEmpty) parts.add('IP $_ip');
     if ((_org ?? '').isNotEmpty) parts.add('$_org');
+    if (_tun) parts.add('весь трафик машины идёт по цепочке');
     if (parts.isEmpty) return 'SOCKS5 готов';
     return parts.join(' · ');
   }
@@ -408,6 +435,14 @@ class TunnelController extends ChangeNotifier {
         'остановлено по команде',
       );
       notifyListeners();
+      return;
+    }
+    // pkexec: 126 — пользователь отменил диалог, 127 — прав нет вовсе.
+    if (_lastError == null && _tun && (code == 126 || code == 127)) {
+      _fail(
+        'отказ в правах root: подтвердите системный диалог пароля '
+        'или запустите без системного туннеля',
+      );
       return;
     }
     _fail(_lastError ?? 'warpgen завершился с кодом $code');
