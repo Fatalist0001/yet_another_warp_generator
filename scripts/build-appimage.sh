@@ -103,6 +103,16 @@ export APPDIR="$this_dir"
 export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 source "$this_dir/apprun-hooks/linuxdeploy-plugin-gtk.sh"
 
+# linuxdeploy жёстко ставит GDK_BACKEND=x11 («Crash with Wayland backend»).
+# Под Wayland-композиторами с xwayland-satellite X11-окна теряют ввод и плодят
+# служебные окна 1×1, поэтому предпочитаем нативный Wayland. Вернуть X11
+# можно явно: WARPGEN_GDK_BACKEND=x11.
+if [ -n "${WARPGEN_GDK_BACKEND:-}" ]; then
+	export GDK_BACKEND="$WARPGEN_GDK_BACKEND"
+elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
+	export GDK_BACKEND=wayland
+fi
+
 # Обёртка вокруг CLI: путь к бинарнику и файл аккаунта — writable (AppImage
 # смонтирован только для чтения, аккаунт рядом с бинарником не создастся).
 export WARPGEN_BIN="$this_dir/usr/bin/warpgen"
