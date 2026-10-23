@@ -263,8 +263,11 @@ class _StatusCard extends StatelessWidget {
                         ? null
                         : () => tunnel.start()),
                 style: FilledButton.styleFrom(
-                  backgroundColor: onCard,
-                  foregroundColor: failed ? scheme.error : scheme.primary,
+                  // onCard поверх градиента давал светлый текст на светлой
+                  // кнопке — выглядело как disabled. Явная заливка primary
+                  // отличает рабочую кнопку от неактивной.
+                  backgroundColor: failed ? scheme.error : scheme.primary,
+                  foregroundColor: failed ? scheme.onError : scheme.onPrimary,
                   minimumSize: const Size(0, 52),
                   padding: const EdgeInsets.symmetric(horizontal: 24),
                   textStyle: const TextStyle(
