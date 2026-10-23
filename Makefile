@@ -47,7 +47,8 @@ clean:
 gui-deps:
 	cd $(GUI_DIR) && $(GUI_ENV) $(FLUTTER) pub get
 
-gui-test:
+# Live-тесты GUI запускают настоящий CLI и ходят в сеть, поэтому бинарник нужен заранее.
+gui-test: build
 	cd $(GUI_DIR) && $(GUI_ENV) $(FLUTTER) test
 
 gui-analyze:

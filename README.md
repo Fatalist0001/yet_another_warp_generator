@@ -437,7 +437,7 @@ WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run Inte
 make build           # GUI запускает готовый бинарник
 make gui-deps        # flutter pub get
 make gui-run         # запустить окно (нужен Flutter SDK и GTK3 dev-пакеты)
-make gui-test        # офлайн-тесты GUI: без сети и без реальных процессов
+make gui-test        # тесты GUI: обычные (фейки) + live-e2e (сеть и настоящий ./warpgen)
 make gui-analyze     # flutter analyze
 make gui-build       # релизная сборка Linux-приложения
 ```
