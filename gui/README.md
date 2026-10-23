@@ -15,6 +15,7 @@ make gui-deps     # flutter pub get
 make gui-run      # окно приложения
 make gui-test     # все тесты, включая live-e2e (сеть + настоящий ./warpgen)
 make gui-analyze  # flutter analyze
+make gui-appimage # переносимый AppImage (нужен ./warp-plus в корне)
 ```
 
 Нужны Flutter SDK (desktop Linux) и GTK3 dev-пакеты (`libgtk-3-dev`,
@@ -24,6 +25,21 @@ make gui-analyze  # flutter analyze
 `lib/` и `data/`). В `linux/CMakeLists.txt` добавлена проверка `if(EXISTS …)` вокруг
 установки `native_assets`: шаблон Flutter 3.47 падает на чистой сборке приложения без
 native assets (`file INSTALL cannot find …/build/native_assets/linux`).
+
+## AppImage
+
+`make gui-appimage` собирает `warpgen-<версия>-x86_64.AppImage` скриптом
+`scripts/build-appimage.sh`: бандл Flutter + `./warpgen` + `./warp-plus`
+(без него режим WARP + Psiphon не запустится). Сторонние инструменты
+(`linuxdeploy.AppImage`, `appimagetool.AppImage`, `linuxdeploy-plugin-gtk.sh`)
+в git не лежат — скрипт проверяет их наличие и подсказывает, что скачать.
+Рабочий каталог — `.appimage-build/` (в `.gitignore`).
+
+`AppRun` внутри образа выставляет `WARPGEN_BIN=$APPDIR/usr/bin/warpgen` и
+`WARPGEN_ACCOUNT=${WARPGEN_ACCOUNT:-$HOME/.warpgen/warpgen-account.json}`:
+AppImage смонтирован только для чтения, поэтому аккаунт и конфиги живут в `$HOME`.
+Образ рассчитан на x86_64, требует glibc ≥ 2.34 и FUSE
+(без FUSE — `--appimage-extract-and-run`).
 
 Бинарник ищется в `WARPGEN_BIN`, затем в `PATH`, затем в текущем каталоге; если
 не найден, приложение просит путь. Файл аккаунта берётся рядом с бинарником

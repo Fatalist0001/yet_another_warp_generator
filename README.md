@@ -440,6 +440,7 @@ make gui-run         # запустить окно (нужен Flutter SDK и GT
 make gui-test        # тесты GUI: обычные (фейки) + live-e2e (сеть и настоящий ./warpgen)
 make gui-analyze     # flutter analyze
 make gui-build       # релизная сборка Linux-приложения
+make gui-appimage    # переносимый AppImage (нужен ./warp-plus в корне)
 ```
 
 | Раздел | Что делает |
@@ -463,6 +464,17 @@ SIGKILL уходит только если процесс не вышел за 1
 Для сборки GUI нужны Flutter SDK (desktop Linux) и GTK3 dev-пакеты (`libgtk-3-dev`,
 `ninja-build`, `clang`, `cmake`, `pkg-config`). SDK можно держать прямо в корне
 проекта каталогом `.toolchain/` — он в `.gitignore`.
+
+`make gui-appimage` собирает `warpgen-<версия>-x86_64.AppImage`
+(`scripts/build-appimage.sh`): релизный бандл Flutter + `./warpgen` +
+`./warp-plus` (без него не работает режим WARP + Psiphon). Сторонние
+инструменты — `linuxdeploy.AppImage`, `appimagetool.AppImage`,
+`linuxdeploy-plugin-gtk.sh` — в git не лежат; скрипт скажет, чего не хватает.
+Внутри `AppRun` выставляет `WARPGEN_BIN` и `WARPGEN_ACCOUNT`
+(по умолчанию `~/.warpgen/warpgen-account.json`).
+
+Образ — x86_64, требует glibc ≥ 2.34 (Ubuntu 22.04+, Debian 12+) и FUSE
+(иначе `--appimage-extract-and-run`); аккаунт и конфиги пишутся в `~/.warpgen`.
 
 ## Структура пакетов
 

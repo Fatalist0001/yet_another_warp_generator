@@ -1,4 +1,4 @@
-.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean gui-deps gui-test gui-analyze gui-run gui-build
+.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean gui-deps gui-test gui-analyze gui-run gui-build gui-appimage
 
 # GUI на Flutter: SDK берётся из PATH или из локального .toolchain/flutter/bin,
 # кэш пакетов — рядом с локальным SDK (основной диск не занимаем).
@@ -60,3 +60,9 @@ gui-run:
 
 gui-build:
 	cd $(GUI_DIR) && $(GUI_ENV) $(FLUTTER) build linux --release
+
+# Переносимый AppImage: бандл Flutter + CLI + warp-plus (нужен режиму Psiphon).
+# Инструменты linuxdeploy/appimagetool/GTK-плагин в git не лежат — скрипт
+# объяснит, что скачать, если их нет.
+gui-appimage: build gui-build
+	./scripts/build-appimage.sh

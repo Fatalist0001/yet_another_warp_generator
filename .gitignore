@@ -43,6 +43,15 @@ coverage.out
 /gui/.flutter-plugins-dependencies
 /gui/linux/flutter/ephemeral/
 
+# AppImage GUI и рабочие каталоги его сборки
+/warpgen-*-x86_64.AppImage
+/.appimage-build/
+
+# Инструменты AppImage (сторонние бинарники, скачиваются вручную)
+/appimagetool.AppImage
+/linuxdeploy.AppImage
+/linuxdeploy-plugin-gtk.sh
+
 # --- ОС и редакторы ---
 .DS_Store
 *.swp
