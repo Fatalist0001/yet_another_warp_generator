@@ -272,8 +272,12 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
   }
 }
 
-/// Оболочка: две горизонтальные вкладки — подключение и настройки.
-class _Shell extends StatelessWidget {
+/// Оболочка: две нижние вкладки — подключение и настройки.
+///
+/// Вкладки не используют `TabBarView`: он уничтожал невидимую страницу и
+/// раскладывал обе при каждом переключении. `IndexedStack` держит страницы
+/// живыми, а вторая создаётся только при первом открытии.
+class _Shell extends StatefulWidget {
   const _Shell({
     required this.deps,
     required this.tunnel,
@@ -291,49 +295,121 @@ class _Shell extends StatelessWidget {
   final Future<bool> Function(String? path) onRelocate;
 
   @override
+  State<_Shell> createState() => _ShellState();
+}
+
+class _ShellState extends State<_Shell> {
+  int _index = 0;
+
+  // Страницы создаются один раз. Если строить их в `build`, то каждое
+  // переключение вкладки пересобирало обе страницы, включая скрытую.
+  late Widget _tunnelPage;
+  Widget? _settingsPage;
+
+  @override
+  void initState() {
+    super.initState();
+    _tunnelPage = _buildTunnelPage();
+  }
+
+  @override
+  void didUpdateWidget(covariant _Shell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.tunnel, widget.tunnel) ||
+        !identical(oldWidget.services, widget.services) ||
+        !identical(oldWidget.deps, widget.deps) ||
+        !identical(oldWidget.account, widget.account) ||
+        !identical(oldWidget.settings, widget.settings)) {
+      _tunnelPage = _buildTunnelPage();
+      _settingsPage = _index == 1 ? _buildSettingsPage() : null;
+    }
+  }
+
+  Widget _buildTunnelPage() {
+    return TunnelPage(tunnel: widget.tunnel, services: widget.services);
+  }
+
+  Widget _buildSettingsPage() {
+    return SettingsPage(
+      deps: widget.deps,
+      tunnel: widget.tunnel,
+      account: widget.account,
+      settings: widget.settings,
+      services: widget.services,
+      onRelocate: widget.onRelocate,
+    );
+  }
+
+  void _selectTab(int index) {
+    if (index == _index) return;
+    setState(() {
+      _index = index;
+      if (index == 1) _settingsPage ??= _buildSettingsPage();
+    });
+  }
+
+  Widget _tabButton(BuildContext context, int index, String label) {
+    final scheme = Theme.of(context).colorScheme;
+    final selected = _index == index;
+    return Expanded(
+      child: Semantics(
+        button: true,
+        selected: selected,
+        child: TextButton(
+          key: ValueKey('tab-$index'),
+          onPressed: () => _selectTab(index),
+          style: TextButton.styleFrom(
+            foregroundColor: selected ? scheme.primary : scheme.onSurfaceVariant,
+            backgroundColor:
+                selected ? scheme.primaryContainer : Colors.transparent,
+            // Без splash и анимации: на программном рендеринге они заметно
+            // нагружали CPU, хотя переключение всего лишь меняет страницу.
+            splashFactory: NoSplash.splashFactory,
+            overlayColor: Colors.transparent,
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(10)),
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 12),
+          ),
+          child: Text(label),
+        ),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.shield_moon_outlined, color: scheme.primary, size: 22),
-              const SizedBox(width: 8),
-              const Text('Товарищ майор'),
-            ],
-          ),
+    return Scaffold(
+      appBar: AppBar(title: const Text('Товарищ майор')),
+      bottomNavigationBar: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          border: Border(top: BorderSide(color: scheme.outlineVariant)),
         ),
-        bottomNavigationBar: DecoratedBox(
-          decoration: BoxDecoration(
-            color: scheme.surface,
-            border: Border(top: BorderSide(color: scheme.outlineVariant)),
-          ),
-          child: const SafeArea(
-            top: false,
-            child: TabBar(
-              tabs: [
-                Tab(icon: Icon(Icons.power_settings_new), text: 'Подключение'),
-                Tab(icon: Icon(Icons.tune), text: 'Настройки'),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+            child: Row(
+              children: [
+                _tabButton(context, 0, 'Подключение'),
+                const SizedBox(width: 8),
+                _tabButton(context, 1, 'Настройки'),
               ],
             ),
           ),
         ),
-        body: TabBarView(
-          children: [
-            TunnelPage(tunnel: tunnel, services: services),
-            SettingsPage(
-              deps: deps,
-              tunnel: tunnel,
-              account: account,
-              settings: settings,
-              services: services,
-              onRelocate: onRelocate,
-            ),
-          ],
-        ),
+      ),
+      body: IndexedStack(
+        index: _index,
+        children: [
+          TickerMode(enabled: _index == 0, child: _tunnelPage),
+          TickerMode(
+            enabled: _index == 1,
+            child: _settingsPage ?? const SizedBox.shrink(),
+          ),
+        ],
       ),
     );
   }

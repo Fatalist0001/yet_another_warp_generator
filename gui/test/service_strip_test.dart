@@ -77,10 +77,33 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.byIcon(Icons.check_circle_outline), findsNWidgets(2));
-    expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
-    expect(find.byIcon(Icons.cancel_outlined), findsOneWidget);
+    final scheme = AppTheme.light().colorScheme;
+    Color? chipColor(String id) {
+      final container = tester.widget<Container>(
+        find.byKey(ValueKey('service-$id')),
+      );
+      return (container.decoration! as BoxDecoration).color;
+    }
+
+    expect(chipColor('yandex'), scheme.secondaryContainer);
+    expect(chipColor('vk'), scheme.secondaryContainer);
+    expect(
+      chipColor('chatgpt'),
+      scheme.tertiaryContainer.withValues(alpha: 0.7),
+    );
+    expect(
+      chipColor('ozon'),
+      scheme.errorContainer.withValues(alpha: 0.55),
+    );
     expect(find.text('доступно 2 из 4'), findsOneWidget);
     expect(find.byTooltip('HTTP 403: сервер ответил ошибкой'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(ServiceStrip),
+        matching: find.byType(Icon),
+      ),
+      findsNothing,
+      reason: 'в пунктах интерфейса не должно быть иконок',
+    );
   });
 }

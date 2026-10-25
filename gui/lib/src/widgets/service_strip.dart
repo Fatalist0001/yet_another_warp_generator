@@ -36,8 +36,6 @@ class ServiceStrip extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(Icons.public, size: 18, color: scheme.primary),
-                const SizedBox(width: 8),
                 Text(
                   'Сервисы',
                   style: theme.textTheme.labelLarge?.copyWith(
@@ -54,11 +52,12 @@ class ServiceStrip extends StatelessWidget {
                   ),
                 const Spacer(),
                 if (enabled)
-                  IconButton(
-                    tooltip: 'Проверить снова',
-                    visualDensity: VisualDensity.compact,
+                  TextButton(
                     onPressed: services.checking ? null : onRetry,
-                    icon: const Icon(Icons.refresh, size: 18),
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    child: const Text('Обновить'),
                   ),
               ],
             ),
@@ -118,14 +117,10 @@ class _ServiceChip extends StatelessWidget {
         : warning
             ? scheme.onTertiaryContainer
             : scheme.onSecondaryContainer;
-    final icon = unavailable
-        ? Icons.cancel_outlined
-        : warning
-            ? Icons.warning_amber_rounded
-            : Icons.check_circle_outline;
     return Tooltip(
       message: _hint(status),
       child: Container(
+        key: ValueKey('service-${status.id}'),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: background,
@@ -134,8 +129,6 @@ class _ServiceChip extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 15, color: foreground),
-            const SizedBox(width: 6),
             Text(
               status.label,
               style: theme.textTheme.labelMedium?.copyWith(color: foreground),

@@ -87,7 +87,9 @@ void main() {
     );
 
     expect(find.text('Товарищ майор'), findsOneWidget);
-    expect(find.byType(TabBar), findsOneWidget);
+    expect(find.byType(TabBar), findsNothing);
+    expect(find.byKey(const ValueKey('tab-0')), findsOneWidget);
+    expect(find.byKey(const ValueKey('tab-1')), findsOneWidget);
     expect(find.text('Подключение'), findsOneWidget);
     expect(find.text('Настройки'), findsOneWidget);
     expect(find.text('Подключиться'), findsOneWidget);

@@ -7,6 +7,7 @@
 library;
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -99,6 +100,7 @@ class TunnelController extends ChangeNotifier {
   List<String> _countries = List<String>.of(defaultCountries);
   String _bind = defaultBind;
   final List<JournalEntry> _journal = [];
+  final ValueNotifier<int> _journalRevision = ValueNotifier<int>(0);
   RunningProcess? _process;
   Future<void>? _stdoutDone;
   Future<void>? _stderrDone;
@@ -166,13 +168,17 @@ class TunnelController extends ChangeNotifier {
   }
 
   /// Страны Psiphon в порядке приоритета.
-  List<String> get countries => List<String>.unmodifiable(_countries);
+  List<String> get countries => UnmodifiableListView(_countries);
 
   /// Адрес SOCKS5, который получит warpgen.
   String get bind => _bind;
 
   /// Журнал: сначала старые, в конце самые свежие записи.
-  List<JournalEntry> get journal => List<JournalEntry>.unmodifiable(_journal);
+  List<JournalEntry> get journal => UnmodifiableListView(_journal);
+
+  /// Счётчик изменений журнала. Отдельный от основного notifier, чтобы строки
+  /// терминала не перестраивали всю страницу подключения.
+  ValueListenable<int> get journalRevision => _journalRevision;
 
   /// Запущен ли процесс (включая подготовку и остановку).
   bool get isRunning =>
@@ -365,6 +371,7 @@ class TunnelController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     shutdown();
+    _journalRevision.dispose();
     super.dispose();
   }
 
@@ -391,6 +398,7 @@ class TunnelController extends ChangeNotifier {
     _readyAt = null;
     _prepareTime = null;
     _journal.clear();
+    _journalRevision.value++;
     _stopRequested = false;
   }
 
@@ -416,6 +424,9 @@ class TunnelController extends ChangeNotifier {
   }
 
   void _handle(PipelineEvent event) {
+    final oldStatus = _status;
+    final oldHeadline = _headline;
+    final oldDetail = _detail;
     _addJournal(event.description, event.severity);
 
     switch (event.kind) {
@@ -525,7 +536,11 @@ class TunnelController extends ChangeNotifier {
       default:
         break;
     }
-    notifyListeners();
+    if (oldStatus != _status ||
+        oldHeadline != _headline ||
+        oldDetail != _detail) {
+      notifyListeners();
+    }
   }
 
   String _liveDetail() {
@@ -631,6 +646,7 @@ class TunnelController extends ChangeNotifier {
     EventSeverity severity, {
     bool isDiagnostic = false,
   }) {
+    if (_disposed) return;
     _journal.add(
       JournalEntry(
         time: _clock(),
@@ -642,6 +658,7 @@ class TunnelController extends ChangeNotifier {
     if (_journal.length > maxJournal) {
       _journal.removeRange(0, _journal.length - maxJournal);
     }
+    _journalRevision.value++;
   }
 
   String _describeStartError(Object error) {

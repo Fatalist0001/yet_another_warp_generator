@@ -32,7 +32,9 @@ class _TerminalPanelState extends State<TerminalPanel> {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: widget.tunnel,
+      // Только журнал: события статуса и конфигурации не должны перестраивать
+      // терминал, а новые строки — всю страницу подключения.
+      animation: widget.tunnel.journalRevision,
       builder: (context, _) {
         final entries = widget.tunnel.journal;
         // Автопрокрутку планируем только когда появилась новая запись, а не
@@ -53,11 +55,9 @@ class _TerminalPanelState extends State<TerminalPanel> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 8, 6),
+                padding: const EdgeInsets.fromLTRB(16, 8, 8, 4),
                 child: Row(
                   children: [
-                    Icon(Icons.terminal, size: 18, color: scheme.primary),
-                    const SizedBox(width: 8),
                     Text(
                       'Терминал',
                       style: theme.textTheme.labelLarge?.copyWith(
@@ -65,9 +65,7 @@ class _TerminalPanelState extends State<TerminalPanel> {
                       ),
                     ),
                     const Spacer(),
-                    IconButton(
-                      tooltip: 'Скопировать состояние',
-                      visualDensity: VisualDensity.compact,
+                    TextButton(
                       onPressed: entries.isEmpty
                           ? null
                           : () => copyToClipboard(
@@ -75,20 +73,23 @@ class _TerminalPanelState extends State<TerminalPanel> {
                                 _asText(entries),
                                 message: 'Состояние скопировано',
                               ),
-                      icon: const Icon(Icons.copy_all_outlined, size: 18),
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      child: const Text('Копировать'),
                     ),
                   ],
                 ),
               ),
               Divider(height: 1, color: scheme.outlineVariant),
               SizedBox(
-                height: 240,
+                height: 250,
                 child: entries.isEmpty
                     ? Center(
                         child: Text(
                           '› ожидание подключения',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontFamily: 'monospace',
+                          style: _terminalStyle(
+                            theme,
                             color: scheme.onSurfaceVariant,
                           ),
                         ),
@@ -136,6 +137,22 @@ class _TerminalPanelState extends State<TerminalPanel> {
   }
 }
 
+/// Единый стиль терминала: моноширинный, но крупнее и плотнее системного
+/// `monospace`, который выглядел слишком тонким рядом с остальным интерфейсом.
+TextStyle? _terminalStyle(
+  ThemeData theme, {
+  Color? color,
+  FontWeight fontWeight = FontWeight.w500,
+}) {
+  return theme.textTheme.bodyMedium?.copyWith(
+    fontFamily: monoFontFamily,
+    fontSize: 13.5,
+    height: 1.35,
+    fontWeight: fontWeight,
+    color: color,
+  );
+}
+
 class _Line extends StatelessWidget {
   const _Line({required this.entry});
 
@@ -159,16 +176,13 @@ class _Line extends StatelessWidget {
         children: [
           Text(
             formatTime(entry.time),
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontFamily: 'monospace',
-              color: scheme.outline,
-            ),
+            style: _terminalStyle(theme, color: scheme.outline),
           ),
           const SizedBox(width: 8),
           Text(
             marker,
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontFamily: 'monospace',
+            style: _terminalStyle(
+              theme,
               color: color,
               fontWeight: FontWeight.w700,
             ),
@@ -177,8 +191,8 @@ class _Line extends StatelessWidget {
           Expanded(
             child: Text(
               entry.text,
-              style: theme.textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
+              style: _terminalStyle(
+                theme,
                 color: entry.isDiagnostic
                     ? scheme.onSurfaceVariant
                     : scheme.onSurface,

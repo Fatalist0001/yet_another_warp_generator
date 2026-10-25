@@ -32,45 +32,45 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Каждая карточка слушает только свои контроллеры: события туннеля не
-    // должны перестраивать DNS, аккаунт и тему (это заметно на прокрутке).
+    // Список ленивый: на экране высотой 760 px строятся только видимые
+    // карточки, а не все пять сразу. Это заметно ускоряет и вход во вкладку,
+    // и прокрутку.
     return SafeArea(
-      child: SingleChildScrollView(
+      child: ListView.separated(
+        key: const PageStorageKey<String>('settings'),
         padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 760),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                AnimatedBuilder(
-                  animation: tunnel,
-                  builder: (context, _) => _connectionCard(context),
-                ),
-                const SizedBox(height: 16),
-                AnimatedBuilder(
-                  animation: settings,
-                  builder: (context, _) => _dnsCard(context),
-                ),
-                const SizedBox(height: 16),
-                AnimatedBuilder(
-                  animation: Listenable.merge([settings, services, tunnel]),
-                  builder: (context, _) => _servicesCard(context),
-                ),
-                const SizedBox(height: 16),
-                AnimatedBuilder(
-                  animation: Listenable.merge([account, tunnel]),
-                  builder: (context, _) => _accountCard(context),
-                ),
-                const SizedBox(height: 16),
-                AnimatedBuilder(
-                  animation: settings,
-                  builder: (context, _) => _appCard(context),
-                ),
-              ],
+        itemCount: 5,
+        separatorBuilder: (context, index) => const SizedBox(height: 16),
+        itemBuilder: (context, index) {
+          final card = switch (index) {
+            0 => AnimatedBuilder(
+                animation: tunnel,
+                builder: (context, _) => _connectionCard(context),
+              ),
+            1 => AnimatedBuilder(
+                animation: Listenable.merge([settings, tunnel]),
+                builder: (context, _) => _dnsCard(context),
+              ),
+            2 => AnimatedBuilder(
+                animation: Listenable.merge([settings, services]),
+                builder: (context, _) => _servicesCard(context),
+              ),
+            3 => AnimatedBuilder(
+                animation: account,
+                builder: (context, _) => _accountCard(context),
+              ),
+            _ => AnimatedBuilder(
+                animation: settings,
+                builder: (context, _) => _appCard(context),
+              ),
+          };
+          return Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 760),
+              child: card,
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }
@@ -83,7 +83,6 @@ class SettingsPage extends StatelessWidget {
     }.toList();
     return SectionCard(
       title: 'Подключение',
-      icon: Icons.tune,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -130,18 +129,18 @@ class SettingsPage extends StatelessWidget {
     final presets = settings.presets;
     return SectionCard(
       title: 'DNS',
-      icon: Icons.dns_outlined,
       trailing: settings.loadingPresets
           ? const SizedBox(
               width: 18,
               height: 18,
               child: CircularProgressIndicator(strokeWidth: 2),
             )
-          : IconButton(
-              tooltip: 'Обновить список DNS',
-              visualDensity: VisualDensity.compact,
+          : TextButton(
               onPressed: settings.refreshPresets,
-              icon: const Icon(Icons.refresh, size: 18),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+              ),
+              child: const Text('Обновить'),
             ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -236,7 +235,7 @@ class SettingsPage extends StatelessWidget {
                     : '${info.interfaceName.isEmpty ? 'интерфейс' : info.interfaceName}: '
                         '${info.servers.join(', ')}',
                 style: theme.textTheme.bodyMedium?.copyWith(
-                  fontFamily: 'monospace',
+                  fontFamily: monoFontFamily,
                 ),
               ),
             ),
@@ -273,7 +272,7 @@ class SettingsPage extends StatelessWidget {
               child: Text(
                 resolved.isEmpty ? preset.value : resolved,
                 style: theme.textTheme.bodyMedium?.copyWith(
-                  fontFamily: 'monospace',
+                  fontFamily: monoFontFamily,
                 ),
               ),
             ),
@@ -300,7 +299,6 @@ class SettingsPage extends StatelessWidget {
     final theme = Theme.of(context);
     return SectionCard(
       title: 'Сервисы',
-      icon: Icons.public,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -314,20 +312,7 @@ class SettingsPage extends StatelessWidget {
             value: settings.settings.checkServices,
             onChanged: settings.setCheckServices,
           ),
-          if (tunnel.isLive)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: services.checking
-                    ? null
-                    : () {
-                        final socks = tunnel.socks;
-                        if (socks != null) services.check(socks);
-                      },
-                icon: const Icon(Icons.play_arrow_outlined, size: 18),
-                label: const Text('Проверить сейчас'),
-              ),
-            ),
+          _ServiceCheckButton(tunnel: tunnel, services: services),
           if (services.error != null)
             Text(
               services.error!,
@@ -346,7 +331,6 @@ class SettingsPage extends StatelessWidget {
     final info = account.account;
     return SectionCard(
       title: 'Аккаунт WARP',
-      icon: Icons.person_outline,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -374,7 +358,7 @@ class SettingsPage extends StatelessWidget {
               'Файл: ${account.accountFile}',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: scheme.onSurfaceVariant,
-                fontFamily: 'monospace',
+                fontFamily: monoFontFamily,
               ),
             ),
           ],
@@ -386,24 +370,25 @@ class SettingsPage extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 14),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              if (info == null)
-                FilledButton.tonalIcon(
-                  onPressed: account.busy ? null : account.register,
-                  icon: const Icon(Icons.person_add_alt_1, size: 18),
-                  label: const Text('Создать сейчас'),
+          AnimatedBuilder(
+            animation: Listenable.merge([account, tunnel]),
+            builder: (context, _) => Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                if (info == null)
+                  FilledButton.tonal(
+                    onPressed: account.busy ? null : account.register,
+                    child: const Text('Создать сейчас'),
+                  ),
+                OutlinedButton(
+                  onPressed: account.busy || tunnel.isRunning
+                      ? null
+                      : () => _confirmRecreate(context),
+                  child: const Text('Пересоздать конфигурацию'),
                 ),
-              OutlinedButton.icon(
-                onPressed: account.busy || tunnel.isRunning
-                    ? null
-                    : () => _confirmRecreate(context),
-                icon: const Icon(Icons.restart_alt, size: 18),
-                label: const Text('Пересоздать конфигурацию'),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
       ),
@@ -415,18 +400,16 @@ class SettingsPage extends StatelessWidget {
     final scheme = theme.colorScheme;
     return SectionCard(
       title: 'Приложение',
-      icon: Icons.settings_outlined,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           ListTile(
             contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.terminal),
             title: const Text('CLI-бинарник'),
             subtitle: Text(
               deps.cli.binaryPath,
               style: theme.textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
+                fontFamily: monoFontFamily,
                 color: scheme.onSurfaceVariant,
               ),
             ),
@@ -442,21 +425,9 @@ class SettingsPage extends StatelessWidget {
             showSelectedIcon: false,
             expandedInsets: EdgeInsets.zero,
             segments: const [
-              ButtonSegment(
-                value: 'system',
-                icon: Icon(Icons.brightness_auto_outlined, size: 18),
-                label: Text('Системная'),
-              ),
-              ButtonSegment(
-                value: 'light',
-                icon: Icon(Icons.light_mode_outlined, size: 18),
-                label: Text('Светлая'),
-              ),
-              ButtonSegment(
-                value: 'dark',
-                icon: Icon(Icons.dark_mode_outlined, size: 18),
-                label: Text('Тёмная'),
-              ),
+              ButtonSegment(value: 'system', label: Text('Системная')),
+              ButtonSegment(value: 'light', label: Text('Светлая')),
+              ButtonSegment(value: 'dark', label: Text('Тёмная')),
             ],
             selected: {settings.settings.themeMode},
             onSelectionChanged: (values) => settings.setThemeMode(values.first),
@@ -466,7 +437,7 @@ class SettingsPage extends StatelessWidget {
             'Настройки: ${deps.settingsPath}',
             style: theme.textTheme.bodySmall?.copyWith(
               color: scheme.onSurfaceVariant,
-              fontFamily: 'monospace',
+              fontFamily: monoFontFamily,
             ),
           ),
         ],
@@ -568,6 +539,38 @@ class SettingsPage extends StatelessWidget {
   }
 }
 
+class _ServiceCheckButton extends StatelessWidget {
+  const _ServiceCheckButton({
+    required this.tunnel,
+    required this.services,
+  });
+
+  final TunnelController tunnel;
+  final ServicesController services;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: tunnel,
+      builder: (context, _) {
+        if (!tunnel.isLive) return const SizedBox.shrink();
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            onPressed: services.checking
+                ? null
+                : () {
+                    final socks = tunnel.socks;
+                    if (socks != null) services.check(socks);
+                  },
+            child: const Text('Проверить сейчас'),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _InfoRow extends StatelessWidget {
   const _InfoRow({required this.label, required this.value});
 
@@ -595,7 +598,7 @@ class _InfoRow extends StatelessWidget {
             child: SelectableText(
               value,
               style: theme.textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
+                fontFamily: monoFontFamily,
               ),
             ),
           ),

@@ -6,19 +6,20 @@ import 'package:flutter/services.dart';
 
 import '../models/pipeline_event.dart';
 
-/// Карточка раздела с заголовком и необязательной иконкой.
+/// Моноширинный шрифт интерфейса (подключён в pubspec).
+const String monoFontFamily = 'FiraMono';
+
+/// Карточка раздела с заголовком.
 class SectionCard extends StatelessWidget {
   const SectionCard({
     super.key,
     required this.child,
     this.title,
-    this.icon,
     this.trailing,
   });
 
   final Widget child;
   final String? title;
-  final IconData? icon;
   final Widget? trailing;
 
   @override
@@ -33,10 +34,6 @@ class SectionCard extends StatelessWidget {
             if (title != null) ...[
               Row(
                 children: [
-                  if (icon != null) ...[
-                    Icon(icon, size: 20, color: theme.colorScheme.primary),
-                    const SizedBox(width: 8),
-                  ],
                   Expanded(
                     child: Text(
                       title!,
@@ -62,13 +59,11 @@ class SectionCard extends StatelessWidget {
 class EmptyState extends StatelessWidget {
   const EmptyState({
     super.key,
-    required this.icon,
     required this.title,
     required this.message,
     this.action,
   });
 
-  final IconData icon;
   final String title;
   final String message;
   final Widget? action;
@@ -82,12 +77,6 @@ class EmptyState extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            CircleAvatar(
-              radius: 28,
-              backgroundColor: theme.colorScheme.secondaryContainer,
-              child: Icon(icon, color: theme.colorScheme.onSecondaryContainer),
-            ),
-            const SizedBox(height: 16),
             Text(
               title,
               textAlign: TextAlign.center,
@@ -134,11 +123,6 @@ class ErrorCard extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              Icons.error_outline,
-              color: theme.colorScheme.onErrorContainer,
-            ),
-            const SizedBox(width: 12),
             Expanded(
               child: Text(
                 message,

@@ -67,7 +67,6 @@ class _SetupPageState extends State<SetupPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 EmptyState(
-                  icon: Icons.terminal_rounded,
                   title: 'Не нашли CLI-бинарник',
                   message: 'GUI запускает тот же CLI, что и терминал. '
                       'Соберите бинарник командой make build в каталоге проекта, '
@@ -76,7 +75,6 @@ class _SetupPageState extends State<SetupPage> {
                 const SizedBox(height: 16),
                 SectionCard(
                   title: 'Путь к бинарнику',
-                  icon: Icons.folder_open_outlined,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
@@ -91,18 +89,24 @@ class _SetupPageState extends State<SetupPage> {
                         ),
                       ),
                       const SizedBox(height: 12),
-                      FilledButton.icon(
+                      FilledButton(
                         onPressed: _busy ? null : _submit,
-                        icon: _busy
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
+                        child: _busy
+                            ? const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                  SizedBox(width: 12),
+                                  Text('Найти и запустить'),
+                                ],
                               )
-                            : const Icon(Icons.search),
-                        label: const Text('Найти и запустить'),
+                            : const Text('Найти и запустить'),
                       ),
                     ],
                   ),
