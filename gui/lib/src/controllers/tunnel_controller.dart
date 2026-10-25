@@ -36,8 +36,20 @@ enum TunnelStatus {
 
 /// Контроллер одного прогона `warpgen run`.
 class TunnelController extends ChangeNotifier {
-  TunnelController({required this.cli, DateTime Function()? clock})
-      : _clock = clock ?? DateTime.now;
+  TunnelController({
+    required this.cli,
+    DateTime Function()? clock,
+    bool warpOnly = true,
+    bool tun = false,
+    List<String>? countries,
+    String bind = defaultBind,
+    this.dnsResolver,
+    this.ensureAccount,
+  })  : _clock = clock ?? DateTime.now,
+        _warpOnly = warpOnly,
+        _tun = tun,
+        _countries = List<String>.of(countries ?? defaultCountries),
+        _bind = bind;
 
   /// Адрес SOCKS5 по умолчанию — как у CLI.
   static const defaultBind = '127.0.0.1:8086';
@@ -45,11 +57,25 @@ class TunnelController extends ChangeNotifier {
   /// Страны Psiphon по умолчанию — как у CLI.
   static const defaultCountries = ['NL', 'SE', 'DE', 'US', 'PL'];
 
+  /// Рекомендуемые DNS (Comss, Malw, GeoHide) — если настройки недоступны.
+  static const defaultDns = [
+    'dns.comss.one',
+    'dns.malw.link',
+    'dns.geohide.ru',
+  ];
+
   /// Сколько строк журнала держим в памяти.
   static const maxJournal = 200;
 
   final WarpgenCli cli;
   final DateTime Function() _clock;
+
+  /// DNS для `run --dns`. Вызывается перед стартом: DNS провайдера может
+  /// смениться, а список пресетов живёт в настройках.
+  final Future<List<String>> Function()? dnsResolver;
+
+  /// Гарантирует аккаунт WARP. Возвращает текст ошибки или `null`.
+  final Future<String?> Function()? ensureAccount;
 
   TunnelStatus _status = TunnelStatus.idle;
   String _headline = 'Туннель выключен';
@@ -110,7 +136,7 @@ class TunnelController extends ChangeNotifier {
   /// Задержка выбранного endpoint, мс.
   int? get rttMs => _rttMs;
 
-  /// Выбранный резолвер (режим `--tun`; в GUI пока не используется).
+  /// Резолвер, который выбрала цепочка (режим `--tun`).
   String? get dns => _dns;
 
   /// Когда цепочка стала готова.
@@ -201,21 +227,64 @@ class TunnelController extends ChangeNotifier {
       return;
     }
     _resetRun();
+    if (!_warpOnly && _countries.isEmpty) {
+      _fail('Выберите хотя бы одну страну Psiphon');
+      return;
+    }
     _setStatus(
       TunnelStatus.starting,
-      'Готовим туннель…',
-      _warpOnly
-          ? 'ищем endpoint и поднимаем WARP'
-          : 'ищем endpoint, поднимаем WARP и Psiphon',
+      'Проверяем аккаунт…',
+      'при первом включении WARP-аккаунт создаётся автоматически',
+    );
+    _addJournal(
+      'Проверяем аккаунт WARP…',
+      EventSeverity.info,
+      isDiagnostic: true,
     );
     notifyListeners();
 
     try {
+      final accountError = await ensureAccount?.call();
+      if (_stopRequested) {
+        _setStatus(TunnelStatus.idle, 'Туннель выключен', 'остановлено');
+        notifyListeners();
+        return;
+      }
+      if (accountError != null) {
+        _fail(accountError);
+        return;
+      }
+
+      _setStatus(
+        TunnelStatus.starting,
+        'Готовим DNS…',
+        'проверяем выбранный DNS-резолвер',
+      );
+      notifyListeners();
+      final dns = await (dnsResolver?.call() ?? Future.value(defaultDns));
+      _addJournal('DNS: ${dns.join(', ')}', EventSeverity.info,
+          isDiagnostic: true);
+      if (_stopRequested) {
+        _setStatus(TunnelStatus.idle, 'Туннель выключен', 'остановлено');
+        notifyListeners();
+        return;
+      }
+
+      _setStatus(
+        TunnelStatus.starting,
+        'Готовим туннель…',
+        _warpOnly
+            ? 'ищем endpoint и поднимаем WARP'
+            : 'ищем endpoint, поднимаем WARP и Psiphon',
+      );
+      notifyListeners();
+
       final process = await cli.startRun(
         warpOnly: _warpOnly,
         countries: _countries,
         bind: _bind.trim(),
         tun: _tun,
+        dns: dns,
       );
       _process = process;
       _stdoutDone = process.stdout.forEach(_onStdout);
@@ -223,6 +292,11 @@ class TunnelController extends ChangeNotifier {
       unawaited(process.exitCode.then(_onExit));
       if (_stopRequested) process.sendInterrupt();
     } catch (error) {
+      if (_stopRequested) {
+        _setStatus(TunnelStatus.idle, 'Туннель выключен', 'остановлено');
+        notifyListeners();
+        return;
+      }
       _fail(_describeStartError(error));
     }
   }
@@ -246,10 +320,14 @@ class TunnelController extends ChangeNotifier {
     try {
       process.requestStop();
     } on FileSystemException catch (error) {
+      // Мягкая остановка не удалась (например, нет доступа к файлу-сигналу).
+      // Убиваем процесс принудительно, иначе он останется в _process и
+      // повторное подключение будет молча игнорироваться.
+      process.kill();
       _setStatus(
         TunnelStatus.failed,
         'Не удалось остановить',
-        'процесс мог остаться с поднятым туннелем',
+        'процесс завершён принудительно',
       );
       _failure = 'не удалось остановить туннель: ${error.message}';
       _addJournal(_failure!, EventSeverity.error);

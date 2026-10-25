@@ -38,7 +38,14 @@ CGO_ENABLED=0 go build -tags netgo -ldflags "-s -w -extldflags '-static'" -o war
 # 3. Проверить DNS через туннель на выбранном endpoint
 ./warpgen dns-check --endpoint 162.159.192.1:2408
 
-# 4. Сгенерировать конфиг для AmneziaWG
+# 4. Посмотреть DNS-пресеты и DNS текущего подключения
+./warpgen dns-presets
+./warpgen dns-current
+
+# 5. Проверить доступность сервисов через SOCKS5 (после run)
+./warpgen services --socks 127.0.0.1:8086
+
+# 6. Сгенерировать конфиг для AmneziaWG
 ./warpgen gen --endpoint 162.159.192.1:2408 --dns 1.1.1.1 --output warp.conf
 ```
 
@@ -428,31 +435,36 @@ WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run Inte
 
 ## GUI для Linux (Flutter, Material You)
 
-`gui/` — тонкая обёртка над CLI: окно в стиле Material You (Material 3,
-`ColorScheme.fromSeed`) для туннеля, скана и аккаунта. Ядро **не** вшито в
+`gui/` — тонкая обёртка над CLI: минималистичное окно Material You (Material 3,
+`ColorScheme.fromSeed`) с двумя горизонтальными вкладками. Ядро **не** вшито в
 приложение: GUI запускает тот же бинарник `warpgen` и читает его машинный вывод
-(`run --json`, `scan --json`). Поэтому туннель остаётся userspace, root не нужен, а
-поведение такое же, как в терминале.
+(`run --json`, `dns-presets --json`, `services --json`). Поэтому туннель остаётся
+userspace, root не нужен, а поведение такое же, как в терминале.
 
 ```bash
 make build           # GUI запускает готовый бинарник
 make gui-deps        # flutter pub get
 make gui-run         # запустить окно (нужен Flutter SDK и GTK3 dev-пакеты)
-make gui-test        # тесты GUI: обычные (фейки) + live-e2e (сеть и настоящий ./warpgen)
+make gui-test        # офлайн-тесты GUI (фейки, без сети)
+make gui-test-live   # live-e2e: сеть, настоящий ./warpgen и SOCKS5
 make gui-analyze     # flutter analyze
 make gui-build       # релизная сборка Linux-приложения
 make gui-appimage    # переносимый AppImage (нужен ./warp-plus в корне)
 ```
 
-| Раздел | Что делает |
+| Вкладка | Что делает |
 |---|---|
-| Туннель | подключить/отключить `warpgen run`, режим WARP (`--warp-only`) или WARP + Psiphon, страны, адрес SOCKS5, живой журнал событий |
-| Скан | `warpgen scan` с прогрессом, список подходящих endpoint'ов и кнопка «Создать .conf» |
-| Аккаунт | регистрация и перерегистрация WARP, путь к файлу аккаунта |
+| Подключение | одна кнопка «Подключиться», режим WARP или WARP + Psiphon с подсказкой, переключатель системного туннеля (Linux), терминальный блок состояния и проверка сервисов |
+| Настройки | DNS (рекомендуемые Comss/Malw/GeoHide, провайдер автоматически, свой), страны Psiphon, локальный порт, автопроверка сервисов, аккаунт и «Пересоздать конфигурацию», тема, путь к бинарнику |
+
+Аккаунт WARP создаётся автоматически при первом включении и затем используется
+повторно. Отдельный `.conf` в GUI не создаётся: конфигурация живёт внутри
+программы. Кнопка «Пересоздать конфигурацию» регистрирует новый аккаунт и удаляет
+старую identity warp-plus.
 
 Где что лежит:
 
-- конфиги из GUI — `~/.warpgen/conf/warp-<ip>_<port>.conf`;
+- настройки GUI — `~/.warpgen/gui.json` (без приватных ключей);
 - identity warp-plus и кэш Psiphon — `~/.warpgen/chain` (как у CLI);
 - аккаунт — рядом с бинарником `warpgen` (или `WARPGEN_ACCOUNT`);
 - бинарник ищется в `WARPGEN_BIN`, затем в `PATH`, затем в текущем каталоге; если
@@ -489,7 +501,8 @@ SIGKILL уходит только если процесс не вышел за 1
 - `chain/` — цепочка «внешний AWG-туннель → WARP → Psiphon»: запуск внешнего warp-plus и проверка SOCKS5
 - `core/` — самодостаточный пайплайн `run`: автомат состояний (endpoint → туннель → форвардер → страны → мониторинг; либо SOCKS5 поверх туннеля в `--warp-only`), UDP-форвардер, локальный SOCKS5-сервер, события
 - `vpn/` — системный туннель `--tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и их откат (Linux)
-- `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `gen`, `chain`, `run`)
+- `services/` — проверка доступности сервисов через SOCKS5 (Яндекс, VK, Госуслуги, Ozon, Wildberries; YouTube, Instagram, X, Discord, ChatGPT, Telegram, Gemini)
+- `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `dns-presets`, `dns-current`, `services`, `gen`, `chain`, `run`)
 
 ## WARP-safe инварианты конфига
 

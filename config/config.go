@@ -20,16 +20,9 @@ import (
 	"strings"
 )
 
-// PresetDNS — известные DNS-пресеты из существующих генераторов.
+// PresetDNS — все отдельные DNS-значения из DNSPresets (без provider/custom).
 // Список упорядочен: так же он выводится в CLI.
-var PresetDNS = []string{
-	"1.1.1.1",
-	"8.8.8.8",
-	"dns.malw.link",
-	"xbox-dns.ru",
-	"geohide.ru",
-	"dns.comss.one",
-}
+var PresetDNS = AllDNSValues()
 
 // IsPresetDNS reports whether name is a known DNS preset.
 func IsPresetDNS(name string) bool {

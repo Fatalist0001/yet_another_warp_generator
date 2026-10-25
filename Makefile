@@ -1,4 +1,4 @@
-.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean gui-deps gui-test gui-analyze gui-run gui-build gui-appimage
+.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean gui-deps gui-test gui-test-live gui-analyze gui-run gui-build gui-appimage
 
 # GUI на Flutter: SDK берётся из PATH или из локального .toolchain/flutter/bin,
 # кэш пакетов — рядом с локальным SDK (основной диск не занимаем).
@@ -49,7 +49,10 @@ gui-deps:
 
 # Live-тесты GUI запускают настоящий CLI и ходят в сеть, поэтому бинарник нужен заранее.
 gui-test: build
-	cd $(GUI_DIR) && $(GUI_ENV) $(FLUTTER) test
+	cd $(GUI_DIR) && $(GUI_ENV) $(FLUTTER) test test/*_test.dart
+
+gui-test-live: build
+	cd $(GUI_DIR) && $(GUI_ENV) $(FLUTTER) test test/live
 
 gui-analyze:
 	cd $(GUI_DIR) && $(GUI_ENV) $(FLUTTER) analyze

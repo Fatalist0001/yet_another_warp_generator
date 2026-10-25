@@ -51,14 +51,14 @@ chmod +x "$PLUGIN_DIR/linuxdeploy-plugin-gtk.sh"
 chmod +x "$LINUXDEPLOY" "$APPIMAGETOOL"
 
 echo "== 1. иконка и .desktop"
-magick -size 512x512 gradient:'#6750A4-#2F1B69' \
+magick -size 512x512 xc:'#6750A4' \
 	-fill white -font DejaVu-Sans-Bold -pointsize 300 -gravity center -annotate +0-16 'W' \
 	"$WORK/warpgen.png"
 cat >"$WORK/warpgen.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=warpgen
-Comment=WARP через userspace-туннель: подключение, скан endpoint'ов, .conf
+Comment=WARP через userspace-туннель: подключение и проверка сервисов
 Exec=warpgen_gui
 Icon=warpgen
 Categories=Network;Utility;

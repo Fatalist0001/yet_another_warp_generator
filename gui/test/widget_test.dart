@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:warpgen_gui/src/app.dart';
 import 'package:warpgen_gui/src/app_theme.dart';
-import 'package:warpgen_gui/src/controllers/account_controller.dart';
+import 'package:warpgen_gui/src/controllers/services_controller.dart';
 import 'package:warpgen_gui/src/controllers/tunnel_controller.dart';
 import 'package:warpgen_gui/src/pages/tunnel_page.dart';
 import 'package:warpgen_gui/src/platform/warpgen_locator.dart';
@@ -12,38 +12,58 @@ import 'package:warpgen_gui/src/platform/warpgen_locator.dart';
 import 'support/fakes.dart';
 
 const _binaryPath = '/opt/warpgen/warpgen';
-const _homeDir = '/tmp/warpgen-gui-home';
 
-/// Окружение, в котором GUI находит бинарник через WARPGEN_BIN.
-Map<String, String> _env({bool withBinary = true}) => {
+Map<String, String> _env(Directory home, {bool withBinary = true}) => {
       'PATH': '',
-      'HOME': _homeDir,
+      'HOME': home.path,
       if (withBinary) 'WARPGEN_BIN': _binaryPath,
     };
 
-/// Высокое окно: карточки главного экрана не ленивые, но в 600 px не влезают.
+Directory _home() {
+  final dir = Directory.systemTemp.createTempSync('warpgen-gui-home');
+  addTearDown(() {
+    if (dir.existsSync()) dir.deleteSync(recursive: true);
+  });
+  return dir;
+}
+
+/// Высокое окно: терминал и настройки не должны обрезаться.
 void _useTallWindow(WidgetTester tester) {
-  tester.view.physicalSize = const Size(700, 1600);
+  tester.view.physicalSize = const Size(700, 1800);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 }
 
-WarpgenLocator _locator({required bool withBinary}) {
+WarpgenLocator _locator({
+  required Directory home,
+  required bool withBinary,
+}) {
   return WarpgenLocator(
-    environment: _env(withBinary: withBinary),
+    environment: _env(home, withBinary: withBinary),
     workingDirectory: Directory('/tmp'),
     fileExists: (path) => withBinary && path == _binaryPath,
   );
 }
 
+/// Даёт настоящему вводу-выводу (настройки и аккаунт) завершиться.
+Future<void> _pumpApp(WidgetTester tester, Widget app) async {
+  await tester.pumpWidget(app);
+  await tester.runAsync(() async {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+  await tester.pump();
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('без бинарника показывает экран настройки', (tester) async {
+    final home = _home();
     await tester.pumpWidget(
       WarpgenApp(
-        locator: _locator(withBinary: false),
+        locator: _locator(home: home, withBinary: false),
         runner: FakeProcessRunner(),
-        environment: _env(withBinary: false),
+        environment: _env(home, withBinary: false),
       ),
     );
     await tester.pump();
@@ -52,52 +72,58 @@ void main() {
     expect(find.text('Найти и запустить'), findsOneWidget);
   });
 
-  testWidgets('с бинарником показывает оболочку и главный экран',
+  testWidgets('с бинарником показывает две горизонтальные вкладки',
       (tester) async {
     _useTallWindow(tester);
-    await tester.pumpWidget(
+    final home = _home();
+    await _pumpApp(
+      tester,
       WarpgenApp(
-        locator: _locator(withBinary: true),
+        locator: _locator(home: home, withBinary: true),
         runner: FakeProcessRunner(),
-        environment: _env(),
+        environment: _env(home),
       ),
     );
-    await tester.pump();
-    await tester.pump();
 
-    expect(find.text('Туннель'), findsWidgets);
+    expect(find.byType(TabBar), findsOneWidget);
+    expect(find.text('Подключение'), findsOneWidget);
+    expect(find.text('Настройки'), findsOneWidget);
     expect(find.text('Подключиться'), findsOneWidget);
-    expect(find.text('Режим'), findsOneWidget);
-    expect(find.text('Журнал'), findsOneWidget);
-    expect(find.byType(NavigationBar), findsOneWidget);
+    expect(find.text('WARP'), findsOneWidget);
+    expect(find.text('WARP + Psiphon'), findsOneWidget);
+    expect(find.text('Системный туннель'), findsOneWidget);
+    expect(find.text('Терминал'), findsOneWidget);
+    expect(find.byType(NavigationBar), findsNothing);
+    expect(find.byType(NavigationRail), findsNothing);
   });
 
-  testWidgets('на широком окне навигация уезжает в рейл', (tester) async {
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(
+  testWidgets('вкладка настроек показывает DNS и аккаунт', (tester) async {
+    _useTallWindow(tester);
+    final home = _home();
+    await _pumpApp(
+      tester,
       WarpgenApp(
-        locator: _locator(withBinary: true),
+        locator: _locator(home: home, withBinary: true),
         runner: FakeProcessRunner(),
-        environment: _env(),
+        environment: _env(home),
       ),
     );
-    await tester.pump();
-    await tester.pump();
 
-    expect(find.byType(NavigationRail), findsOneWidget);
-    expect(find.byType(NavigationBar), findsNothing);
+    await tester.tap(find.text('Настройки'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.text('DNS'), findsOneWidget);
+    expect(find.text('Аккаунт WARP'), findsOneWidget);
+    expect(find.text('Пересоздать конфигурацию'), findsOneWidget);
+    expect(find.text('Приложение'), findsOneWidget);
   });
 
-  testWidgets('после ready карточка показывает прокси и страну',
-      (tester) async {
+  testWidgets('после ready экран показывает прокси и страну', (tester) async {
     final runner = FakeProcessRunner();
     final cli = fakeCli(runner: runner);
     final tunnel = TunnelController(cli: cli);
-    final account = AccountController(cli: cli);
+    final services = ServicesController(cli: cli);
 
     final process = runner.enqueue();
     await tunnel.start();
@@ -112,17 +138,14 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: AppTheme.light(),
-        home: Scaffold(
-          body: TunnelPage(tunnel: tunnel, account: account),
-        ),
+        home: Scaffold(body: TunnelPage(tunnel: tunnel, services: services)),
       ),
     );
     await tester.pump();
 
     expect(find.text('socks5h://127.0.0.1:8086'), findsOneWidget);
     expect(find.text('Подключено'), findsOneWidget);
-    expect(find.text('203.0.113.9'), findsOneWidget);
-    expect(find.text('NL'), findsWidgets);
+    expect(find.textContaining('203.0.113.9'), findsWidgets);
     expect(find.text('Отключиться'), findsOneWidget);
     expect(find.text('Подключиться'), findsNothing);
 
@@ -130,28 +153,22 @@ void main() {
     await tester.pump();
   });
 
-  testWidgets('пустой журнал подсказывает, что делать', (tester) async {
+  testWidgets('пустой терминал подсказывает, что делать', (tester) async {
     _useTallWindow(tester);
     final runner = FakeProcessRunner();
     final cli = fakeCli(runner: runner);
     final tunnel = TunnelController(cli: cli);
-    final account = AccountController(cli: cli);
-    // Чтение файла аккаунта — настоящий ввод-вывод, выносим его из fake async.
-    await tester.runAsync(account.refresh);
+    final services = ServicesController(cli: cli);
 
     await tester.pumpWidget(
       MaterialApp(
         theme: AppTheme.dark(),
-        home: Scaffold(
-          body: TunnelPage(tunnel: tunnel, account: account),
-        ),
+        home: Scaffold(body: TunnelPage(tunnel: tunnel, services: services)),
       ),
     );
     await tester.pump();
 
-    expect(find.textContaining('Пока пусто'), findsOneWidget);
-    // Аккаунта нет — кнопка подключения недоступна и есть подсказка.
-    expect(find.textContaining('зарегистрируйте аккаунт'), findsOneWidget);
+    expect(find.textContaining('ожидание подключения'), findsOneWidget);
   });
 
   testWidgets('переключатель системного туннеля меняет состояние контроллера',
@@ -160,22 +177,18 @@ void main() {
     final runner = FakeProcessRunner();
     final cli = fakeCli(runner: runner);
     final tunnel = TunnelController(cli: cli);
-    final account = AccountController(cli: cli);
+    final services = ServicesController(cli: cli);
 
     await tester.pumpWidget(
       MaterialApp(
         theme: AppTheme.light(),
-        home: Scaffold(
-          body: TunnelPage(tunnel: tunnel, account: account),
-        ),
+        home: Scaffold(body: TunnelPage(tunnel: tunnel, services: services)),
       ),
     );
     await tester.pump();
 
-    expect(find.text('Системный туннель (root)'), findsOneWidget);
     expect(tunnel.tun, isFalse);
-
-    await tester.tap(find.text('Системный туннель (root)'));
+    await tester.tap(find.text('Системный туннель'));
     await tester.pump();
 
     expect(tunnel.tun, isTrue);

@@ -8,7 +8,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import '../models/scan_report.dart';
+import '../models/dns_preset.dart';
+import '../models/service_status.dart';
 import '../platform/elevated_binary.dart';
 import '../platform/elevated_process.dart';
 import '../platform/process_runner.dart';
@@ -103,6 +104,7 @@ class WarpgenCli {
     required List<String> countries,
     required String bind,
     bool tun = false,
+    List<String> dns = const [],
   }) async {
     final stop = tun ? await _prepareStopFile() : null;
     final args = <String>[
@@ -112,6 +114,7 @@ class WarpgenCli {
       accountFile,
       '--bind',
       bind,
+      if (dns.isNotEmpty) ...['--dns', dns.join(',')],
       if (tun) '--tun',
       if (warpOnly)
         '--warp-only'
@@ -138,6 +141,51 @@ class WarpgenCli {
         'Системному туннелю нужен polkit (пакет polkitd/policykit-1).',
       );
     }
+  }
+
+  /// DNS-пресеты. `resolve` дополнительно резолвит hostname'ы в IP.
+  Future<List<DnsPreset>> dnsPresets({bool resolve = false}) async {
+    final decoded = await _jsonCommand('список DNS', [
+      'dns-presets',
+      '--json',
+      if (resolve) '--resolve',
+    ]);
+    if (decoded is! List) {
+      throw const WarpgenException('не удалось разобрать список DNS');
+    }
+    final presets = <DnsPreset>[];
+    for (final item in decoded) {
+      if (item is Map) {
+        presets.add(DnsPreset.fromJson(item.cast<String, Object?>()));
+      }
+    }
+    return presets;
+  }
+
+  /// DNS текущего подключения — для пресета «DNS провайдера».
+  Future<DnsCurrent> dnsCurrent() async {
+    final decoded = await _jsonCommand('определение DNS', [
+      'dns-current',
+      '--json',
+    ]);
+    if (decoded is! Map) {
+      throw const WarpgenException('не удалось разобрать DNS провайдера');
+    }
+    return DnsCurrent.fromJson(decoded.cast<String, Object?>());
+  }
+
+  /// Проверяет доступность сервисов через SOCKS5.
+  Future<ServiceReport> checkServices(String socks) async {
+    final decoded = await _jsonCommand('проверка сервисов', [
+      'services',
+      '--json',
+      '--socks',
+      socks,
+    ]);
+    if (decoded is! Map) {
+      throw const WarpgenException('не удалось разобрать проверку сервисов');
+    }
+    return ServiceReport.fromJson(decoded.cast<String, Object?>());
   }
 
   /// Готовит файл-сигнал остановки: stale-файл от прошлого прогона удаляется,
@@ -171,122 +219,37 @@ class WarpgenCli {
     }
   }
 
-  /// Сканирует endpoint'ы. Отчёт приходит одним JSON-документом в конце.
-  Future<ScanReport> scan({
-    int maxCandidates = 256,
-    int target = 8,
-    bool strictRegion = false,
-    void Function(int done, int total)? onProgress,
-    void Function(String line)? onDiagnostic,
-  }) async {
-    final args = <String>[
-      'scan',
-      '--json',
-      '--debug',
-      '--max',
-      '$maxCandidates',
-      '--target',
-      '$target',
-      '--account',
-      accountFile,
-      if (strictRegion) '--strict-region',
-    ];
-    final process = await runner.start(binaryPath, args);
-
-    final out = <String>[];
-    final err = <String>[];
-    final progressPattern = RegExp(r'проверено\s+(\d+)/(\d+)');
-
-    final stdoutDone = process.stdout.forEach(out.add);
-    final stderrDone = process.stderr.forEach((line) {
-      final text = line.trim();
-      if (text.isEmpty) return;
-      err.add(text);
-      final match = progressPattern.firstMatch(text);
-      if (match != null) {
-        onProgress?.call(
-          int.parse(match.group(1)!),
-          int.parse(match.group(2)!),
-        );
-        return;
-      }
-      onDiagnostic?.call(text);
-    });
-
-    final code = await process.exitCode;
-    await _drain([stdoutDone, stderrDone]);
-    if (code != 0) {
-      throw WarpgenException(_failure('скан', err));
-    }
-
-    try {
-      final decoded = jsonDecode(out.join('\n'));
-      if (decoded is! Map<String, Object?>) {
-        throw const WarpgenException('не удалось разобрать отчёт скана');
-      }
-      return ScanReport.fromJson(decoded);
-    } on FormatException {
-      throw const WarpgenException('не удалось разобрать отчёт скана');
-    }
-  }
-
-  /// Генерирует `.conf` для AmneziaWG и возвращает путь к файлу.
-  Future<String> generateConfig({
-    required String endpoint,
-    required String outputPath,
-    String dns = '1.1.1.1',
-  }) async {
-    final args = <String>[
-      'gen',
-      '--endpoint',
-      endpoint,
-      '--output',
-      outputPath,
-      '--dns',
-      dns,
-      '--account',
-      accountFile,
-    ];
-    final process = await runner.start(binaryPath, args);
-    final out = <String>[];
-    final err = <String>[];
-    final stdoutDone = process.stdout.forEach(out.add);
-    final stderrDone = process.stderr.forEach((line) => err.add(line.trim()));
-    final code = await process.exitCode;
-    await _drain([stdoutDone, stderrDone]);
-    if (code != 0) {
-      throw WarpgenException(_failure('генерация конфига', [...err, ...out]));
-    }
-    return outputPath;
-  }
-
   /// Регистрирует (или перерегистрирует) аккаунт WARP.
   Future<AccountInfo> register({bool fresh = false}) async {
-    final args = <String>[
+    final decoded = await _jsonCommand('регистрация', [
       'register',
       '--json',
       '--account',
       accountFile,
       if (fresh) '--fresh',
-    ];
-    final process = await runner.start(binaryPath, args);
-    final out = <String>[];
-    final err = <String>[];
-    final stdoutDone = process.stdout.forEach(out.add);
-    final stderrDone = process.stderr.forEach((line) => err.add(line.trim()));
-    final code = await process.exitCode;
-    await _drain([stdoutDone, stderrDone]);
-    if (code != 0) {
-      throw WarpgenException(_failure('регистрация', err));
-    }
-    try {
-      final decoded = jsonDecode(out.join('\n'));
-      if (decoded is! Map<String, Object?>) {
-        throw const WarpgenException('не удалось разобрать ответ регистрации');
-      }
-      return AccountInfo.fromJson(decoded);
-    } on FormatException {
+    ]);
+    if (decoded is! Map) {
       throw const WarpgenException('не удалось разобрать ответ регистрации');
+    }
+    final info = AccountInfo.fromJson(decoded.cast<String, Object?>());
+    if (fresh) {
+      await _clearWarpPlusIdentity();
+    }
+    return info;
+  }
+
+  /// Удаляет identity warp-plus при пересоздании конфигурации: иначе старый
+  /// аккаунт продолжит использоваться в режиме с Psiphon.
+  Future<void> _clearWarpPlusIdentity() async {
+    final dir = cacheDir?.trim();
+    if (dir == null || dir.isEmpty) return;
+    final file = File('$dir/primary/wgcf-identity.json');
+    try {
+      if (await file.exists()) await file.delete();
+    } on FileSystemException catch (error) {
+      throw WarpgenException(
+        'не удалось удалить identity warp-plus: ${error.message}',
+      );
     }
   }
 
@@ -303,6 +266,28 @@ class WarpgenCli {
       return null;
     } on FileSystemException {
       return null;
+    }
+  }
+
+  /// Запускает короткую команду с `--json` и разбирает единственный документ.
+  Future<Object?> _jsonCommand(String action, List<String> args) async {
+    final process = await runner.start(binaryPath, args);
+    final out = <String>[];
+    final err = <String>[];
+    final stdoutDone = process.stdout.forEach(out.add);
+    final stderrDone = process.stderr.forEach((line) {
+      final text = line.trim();
+      if (text.isNotEmpty) err.add(text);
+    });
+    final code = await process.exitCode;
+    await _drain([stdoutDone, stderrDone]);
+    if (code != 0) {
+      throw WarpgenException(_failure(action, [...err, ...out]));
+    }
+    try {
+      return jsonDecode(out.join('\n'));
+    } on FormatException {
+      throw WarpgenException('не удалось разобрать ответ: $action');
     }
   }
 }

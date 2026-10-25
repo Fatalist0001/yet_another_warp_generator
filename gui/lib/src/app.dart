@@ -1,4 +1,4 @@
-/// Корень GUI: поиск бинарника, тема и оболочка с разделами.
+/// Корень GUI: поиск бинарника, тема и оболочка с двумя вкладками.
 library;
 
 import 'dart:async';
@@ -8,14 +8,15 @@ import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
 import 'controllers/account_controller.dart';
-import 'controllers/scan_controller.dart';
+import 'controllers/services_controller.dart';
+import 'controllers/settings_controller.dart';
 import 'controllers/tunnel_controller.dart';
-import 'pages/account_page.dart';
-import 'pages/scan_page.dart';
+import 'pages/settings_page.dart';
 import 'pages/setup_page.dart';
 import 'pages/tunnel_page.dart';
 import 'platform/process_runner.dart';
 import 'platform/warpgen_locator.dart';
+import 'services/settings_store.dart';
 import 'services/warpgen_cli.dart';
 
 /// Собранные зависимости приложения.
@@ -28,8 +29,8 @@ class AppDependencies {
   /// Каталог identity warp-plus и кэша Psiphon.
   String get cacheDir => '$homeDir/.warpgen/chain';
 
-  /// Куда сохраняются сгенерированные конфиги.
-  String get configDir => '$homeDir/.warpgen/conf';
+  /// Файл настроек GUI.
+  String get settingsPath => '$homeDir/.warpgen/gui.json';
 }
 
 /// Приложение warpgen.
@@ -52,11 +53,9 @@ class WarpgenApp extends StatefulWidget {
 class _WarpgenAppState extends State<WarpgenApp> {
   ThemeMode _themeMode = ThemeMode.system;
 
-  void _toggleTheme() {
-    setState(() {
-      _themeMode =
-          _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
-    });
+  void _setThemeMode(ThemeMode mode) {
+    if (_themeMode == mode) return;
+    setState(() => _themeMode = mode);
   }
 
   @override
@@ -72,7 +71,7 @@ class _WarpgenAppState extends State<WarpgenApp> {
         locator: widget.locator ?? WarpgenLocator(environment: environment),
         runner: widget.runner ?? const IoProcessRunner(),
         environment: environment,
-        onToggleTheme: _toggleTheme,
+        onThemeModeChanged: _setThemeMode,
       ),
     );
   }
@@ -84,13 +83,13 @@ class _Root extends StatefulWidget {
     required this.locator,
     required this.runner,
     required this.environment,
-    required this.onToggleTheme,
+    required this.onThemeModeChanged,
   });
 
   final WarpgenLocator locator;
   final ProcessRunner runner;
   final Map<String, String> environment;
-  final VoidCallback onToggleTheme;
+  final ValueChanged<ThemeMode> onThemeModeChanged;
 
   @override
   State<_Root> createState() => _RootState();
@@ -101,8 +100,10 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
   String? _notFoundPath;
   AppDependencies? _deps;
   TunnelController? _tunnel;
-  ScanController? _scan;
   AccountController? _account;
+  SettingsController? _settings;
+  ServicesController? _services;
+  bool _wasLive = false;
 
   String get _homeDir {
     final home = widget.environment['HOME'];
@@ -127,10 +128,22 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _tunnel?.dispose();
-    _scan?.dispose();
-    _account?.dispose();
+    _disposeControllers();
     super.dispose();
+  }
+
+  void _disposeControllers() {
+    _settings?.removeListener(_onSettingsChanged);
+    _tunnel?.removeListener(_onTunnelChanged);
+    _tunnel?.dispose();
+    _services?.dispose();
+    _account?.dispose();
+    _settings?.dispose();
+    _tunnel = null;
+    _services = null;
+    _account = null;
+    _settings = null;
+    _wasLive = false;
   }
 
   /// Ищет бинарник и готовит контроллеры. `false` — не нашли.
@@ -162,24 +175,74 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
       homeDir: _homeDir,
     );
 
-    _tunnel?.dispose();
-    _scan?.dispose();
-    _account?.dispose();
-
-    final tunnel = TunnelController(cli: deps.cli);
-    final scan = ScanController(cli: deps.cli, outputDir: deps.configDir);
     final account = AccountController(cli: deps.cli);
+    final settings = SettingsController(
+      cli: deps.cli,
+      store: SettingsStore(path: deps.settingsPath),
+    );
+    await settings.load();
+    if (!mounted) return false;
+
+    final tunnel = TunnelController(
+      cli: deps.cli,
+      warpOnly: settings.settings.warpOnly,
+      tun: settings.settings.tun,
+      countries: settings.settings.countries,
+      bind: settings.settings.bind,
+      dnsResolver: settings.resolveDns,
+      ensureAccount: account.ensure,
+    );
+    final services = ServicesController(cli: deps.cli);
+
+    _disposeControllers();
+    _tunnel = tunnel;
+    _account = account;
+    _settings = settings;
+    _services = services;
+    settings.addListener(_onSettingsChanged);
+    tunnel.addListener(_onTunnelChanged);
+    widget.onThemeModeChanged(settings.settings.theme);
 
     setState(() {
       _deps = deps;
-      _tunnel = tunnel;
-      _scan = scan;
-      _account = account;
       _loading = false;
       _notFoundPath = null;
     });
     unawaited(account.refresh());
     return true;
+  }
+
+  void _onSettingsChanged() {
+    final settings = _settings;
+    if (settings == null) return;
+    widget.onThemeModeChanged(settings.settings.theme);
+  }
+
+  void _onTunnelChanged() {
+    final tunnel = _tunnel;
+    final settings = _settings;
+    final services = _services;
+    if (tunnel == null || settings == null || services == null) return;
+
+    if (tunnel.isLive && !_wasLive) {
+      _wasLive = true;
+      if (settings.settings.checkServices) {
+        final socks = tunnel.socks;
+        if (socks != null && socks.trim().isNotEmpty) {
+          unawaited(services.check(socks));
+        }
+      }
+    } else if (!tunnel.isLive && _wasLive) {
+      _wasLive = false;
+      services.reset();
+    }
+
+    settings.updateConnection(
+      warpOnly: tunnel.warpOnly,
+      tun: tunnel.tun,
+      countries: tunnel.countries,
+      bind: tunnel.bind,
+    );
   }
 
   @override
@@ -190,7 +253,6 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
     final deps = _deps;
     if (deps == null) {
       return SetupPage(
-        onToggleTheme: widget.onToggleTheme,
         onLocate: (path) => _bootstrap(explicitPath: path),
         initialPath: _notFoundPath ?? '',
       );
@@ -198,193 +260,68 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
     return _Shell(
       deps: deps,
       tunnel: _tunnel!,
-      scan: _scan!,
       account: _account!,
-      onToggleTheme: widget.onToggleTheme,
+      settings: _settings!,
+      services: _services!,
       onRelocate: (path) => _bootstrap(explicitPath: path),
     );
   }
 }
 
-/// Оболочка: навигация снизу на узком окне и рейл — на широком.
-class _Shell extends StatefulWidget {
+/// Оболочка: две горизонтальные вкладки — подключение и настройки.
+class _Shell extends StatelessWidget {
   const _Shell({
     required this.deps,
     required this.tunnel,
-    required this.scan,
     required this.account,
-    required this.onToggleTheme,
+    required this.settings,
+    required this.services,
     required this.onRelocate,
   });
 
   final AppDependencies deps;
   final TunnelController tunnel;
-  final ScanController scan;
   final AccountController account;
-  final VoidCallback onToggleTheme;
+  final SettingsController settings;
+  final ServicesController services;
   final Future<bool> Function(String? path) onRelocate;
 
   @override
-  State<_Shell> createState() => _ShellState();
-}
-
-class _ShellState extends State<_Shell> {
-  int _index = 0;
-
-  List<Widget> _actions(BuildContext context) {
-    return [
-      IconButton(
-        tooltip: 'Сменить тему',
-        onPressed: widget.onToggleTheme,
-        icon: const Icon(Icons.brightness_6_outlined),
-      ),
-      IconButton(
-        tooltip: 'Путь к warpgen',
-        onPressed: () => _showBinaryDialog(context),
-        icon: const Icon(Icons.settings_outlined),
-      ),
-    ];
-  }
-
-  Future<void> _showBinaryDialog(BuildContext context) async {
-    final controller = TextEditingController(text: widget.deps.cli.binaryPath);
-    final path = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Бинарник warpgen'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.shield_moon_outlined, color: scheme.primary, size: 22),
+              const SizedBox(width: 8),
+              const Text('warpgen'),
+            ],
+          ),
+          bottom: const TabBar(
+            tabs: [
+              Tab(icon: Icon(Icons.power_settings_new), text: 'Подключение'),
+              Tab(icon: Icon(Icons.tune), text: 'Настройки'),
+            ],
+          ),
+        ),
+        body: TabBarView(
           children: [
-            Text(
-              'GUI запускает тот же CLI, что и терминал. Укажите путь к бинарнику '
-              'или оставьте поиск по PATH и переменной WARPGEN_BIN.',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Путь к warpgen',
-                hintText: '/home/user/warpgen/warpgen',
-              ),
+            TunnelPage(tunnel: tunnel, services: services),
+            SettingsPage(
+              deps: deps,
+              tunnel: tunnel,
+              account: account,
+              settings: settings,
+              services: services,
+              onRelocate: onRelocate,
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-            child: const Text('Проверить'),
-          ),
-        ],
       ),
-    );
-    controller.dispose();
-    if (path == null || path.isEmpty) return;
-    final found = await widget.onRelocate(path);
-    if (!found && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не нашли бинарник по пути $path')),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final actions = _actions(context);
-    final pages = <Widget>[
-      TunnelPage(
-        tunnel: widget.tunnel,
-        account: widget.account,
-        actions: actions,
-      ),
-      ScanPage(scan: widget.scan, account: widget.account, actions: actions),
-      AccountPage(account: widget.account, actions: actions),
-    ];
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 840;
-        if (wide) {
-          return Scaffold(
-            body: Row(
-              children: [
-                NavigationRail(
-                  selectedIndex: _index,
-                  onDestinationSelected: (index) =>
-                      setState(() => _index = index),
-                  labelType: NavigationRailLabelType.all,
-                  leading: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    child: Column(
-                      children: [
-                        Icon(
-                          Icons.shield_moon_outlined,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'warpgen',
-                          style: Theme.of(context).textTheme.labelSmall,
-                        ),
-                      ],
-                    ),
-                  ),
-                  destinations: const [
-                    NavigationRailDestination(
-                      icon: Icon(Icons.lan_outlined),
-                      selectedIcon: Icon(Icons.lan),
-                      label: Text('Туннель'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(Icons.radar_outlined),
-                      selectedIcon: Icon(Icons.radar),
-                      label: Text('Скан'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(Icons.person_outline),
-                      selectedIcon: Icon(Icons.person),
-                      label: Text('Аккаунт'),
-                    ),
-                  ],
-                ),
-                const VerticalDivider(width: 1),
-                Expanded(child: pages[_index]),
-              ],
-            ),
-          );
-        }
-
-        return Scaffold(
-          body: pages[_index],
-          bottomNavigationBar: NavigationBar(
-            selectedIndex: _index,
-            onDestinationSelected: (index) => setState(() => _index = index),
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.lan_outlined),
-                selectedIcon: Icon(Icons.lan),
-                label: 'Туннель',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.radar_outlined),
-                selectedIcon: Icon(Icons.radar),
-                label: 'Скан',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.person_outline),
-                selectedIcon: Icon(Icons.person),
-                label: 'Аккаунт',
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 }

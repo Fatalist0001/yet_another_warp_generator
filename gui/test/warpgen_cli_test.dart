@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:warpgen_gui/src/models/dns_preset.dart';
+import 'package:warpgen_gui/src/models/service_status.dart';
 import 'package:warpgen_gui/src/platform/process_runner.dart';
 import 'package:warpgen_gui/src/platform/warpgen_locator.dart';
 import 'package:warpgen_gui/src/services/warpgen_cli.dart';
@@ -32,6 +34,25 @@ void main() {
       expect(args, containsAllInOrder(['--bind', '127.0.0.1:8086']));
       expect(args, isNot(contains('--countries')));
       expect(args, isNot(contains('--cache-dir')));
+      expect(args, isNot(contains('--dns')));
+    });
+
+    test('передаёт выбранные DNS в --dns', () async {
+      final runner = FakeProcessRunner();
+      final cli = fakeCli(runner: runner);
+      runner.enqueue();
+
+      await cli.startRun(
+        warpOnly: true,
+        countries: const ['NL'],
+        bind: '127.0.0.1:8086',
+        dns: const ['dns.comss.one', 'dns.malw.link'],
+      );
+
+      expect(
+        runner.invocations.single.arguments,
+        containsAllInOrder(['--dns', 'dns.comss.one,dns.malw.link']),
+      );
     });
 
     test('системный туннель идёт через pkexec с --tun и --cache-dir', () async {
@@ -96,7 +117,8 @@ void main() {
       expect(invocation.executable, 'pkexec');
       expect(invocation.arguments.first, '$elev/warpgen');
       expect(invocation.arguments, isNot(contains(binary.path)),
-          reason: 'AppImage доступен только пользователю, root его не прочитает');
+          reason:
+              'AppImage доступен только пользователю, root его не прочитает');
       expect(File('$elev/warpgen').readAsStringSync(), '#!/bin/sh\n');
       expect(File('$elev/warp-plus').existsSync(), isTrue,
           reason: 'warp-plus ищется рядом с warpgen');
@@ -193,94 +215,84 @@ void main() {
     });
   });
 
-  group('scan', () {
-    test('собирает аргументы, прогресс и отчёт', () async {
+  group('dns-presets', () {
+    test('разбирает список и флаг --resolve', () async {
       final runner = FakeProcessRunner();
       final cli = fakeCli(runner: runner);
       final process = runner.enqueue();
-      final progress = <String>[];
-      final diagnostics = <String>[];
 
-      final future = cli.scan(
-        maxCandidates: 32,
-        target: 2,
-        strictRegion: true,
-        onProgress: (done, total) => progress.add('$done/$total'),
-        onDiagnostic: diagnostics.add,
+      final future = cli.dnsPresets(resolve: true);
+      await flushEvents();
+      process.emitLine(
+        '[{"id":"recommended","label":"Рекомендуемые","value":'
+        '"dns.comss.one,dns.malw.link","kind":"group","default":true},'
+        '{"id":"provider","label":"Провайдер","kind":"provider"}]',
       );
       await flushEvents();
+      await process.finish(0);
 
-      final args = runner.invocations.single.arguments;
-      expect(args, containsAllInOrder(['--max', '32']));
-      expect(args, containsAllInOrder(['--target', '2']));
-      expect(args, contains('--strict-region'));
-      expect(args, contains('--debug'));
+      final presets = await future;
+      expect(presets, hasLength(2));
+      expect(presets.first.id, 'recommended');
+      expect(presets.first.kind, DnsKind.group);
+      expect(presets.first.values, ['dns.comss.one', 'dns.malw.link']);
+      expect(presets.last.kind, DnsKind.provider);
+      expect(
+        runner.invocations.single.arguments,
+        containsAllInOrder(['dns-presets', '--json', '--resolve']),
+      );
+    });
+  });
 
-      process.emitDiagnostic('  проверено 5/32');
-      process.emitDiagnostic('предупреждение сети');
+  group('dns-current', () {
+    test('разбирает серверы и предупреждение', () async {
+      final runner = FakeProcessRunner();
+      final cli = fakeCli(runner: runner);
+      final process = runner.enqueue();
+
+      final future = cli.dnsCurrent();
+      await flushEvents();
       process.emitLine(
-        '{"candidates":32,"results":[],"ranked":[{"IP":"162.159.192.1",'
-        '"Port":2408,"Loc":"NL","Colo":"AMS","RTT":42000000,"Loss":0,'
-        '"Torn":false,"Status":0}]}',
+        '{"interface":"eth0","servers":["192.168.1.1","1.1.1.1"],'
+        '"warning":"локальный DNS"}',
+      );
+      await flushEvents();
+      await process.finish(0);
+
+      final info = await future;
+      expect(info.interfaceName, 'eth0');
+      expect(info.servers, ['192.168.1.1', '1.1.1.1']);
+      expect(info.warning, 'локальный DNS');
+    });
+  });
+
+  group('services', () {
+    test('разбирает отчёт и статусы', () async {
+      final runner = FakeProcessRunner();
+      final cli = fakeCli(runner: runner);
+      final process = runner.enqueue();
+
+      final future = cli.checkServices('127.0.0.1:8086');
+      await flushEvents();
+      process.emitLine(
+        '{"socks":"127.0.0.1:8086","services":['
+        '{"id":"yandex","label":"Яндекс","category":"ru","status":"ok",'
+        '"code":200,"rtt_ms":42},'
+        '{"id":"youtube","label":"YouTube","category":"blocked",'
+        '"status":"timeout"}]}',
       );
       await flushEvents();
       await process.finish(0);
 
       final report = await future;
-      expect(progress, ['5/32']);
-      expect(diagnostics, ['предупреждение сети']);
-      expect(report.candidates, 32);
-      expect(report.ranked.single.endpoint, '162.159.192.1:2408');
-    });
-
-    test('ненулевой код возврата превращается в понятную ошибку', () async {
-      final runner = FakeProcessRunner();
-      final cli = fakeCli(runner: runner);
-      final process = runner.enqueue();
-
-      final future = cli.scan(maxCandidates: 4, target: 1);
-      await flushEvents();
-      process.emitDiagnostic('нет аккаунта warpgen');
-      await flushEvents();
-      await process.finish(1);
-
-      await expectLater(
-        future,
-        throwsA(
-          isA<WarpgenException>().having(
-            (error) => error.message,
-            'message',
-            contains('нет аккаунта warpgen'),
-          ),
-        ),
+      expect(report.socks, '127.0.0.1:8086');
+      expect(report.services, hasLength(2));
+      expect(report.services.first.isOk, isTrue);
+      expect(report.services.last.state, ServiceState.timeout);
+      expect(
+        runner.invocations.single.arguments,
+        containsAllInOrder(['services', '--json', '--socks', '127.0.0.1:8086']),
       );
-    });
-  });
-
-  group('generateConfig', () {
-    test('передаёт endpoint, путь и DNS', () async {
-      final runner = FakeProcessRunner();
-      final cli = fakeCli(runner: runner);
-      final process = runner.enqueue();
-
-      final future = cli.generateConfig(
-        endpoint: '162.159.192.1:2408',
-        outputPath: '/home/tester/.warpgen/conf/warp.conf',
-      );
-      await flushEvents();
-      process.emitLine(
-        'Конфиг сохранён в /home/tester/.warpgen/conf/warp.conf',
-      );
-      await process.finish(0);
-
-      final path = await future;
-      expect(path, '/home/tester/.warpgen/conf/warp.conf');
-
-      final args = runner.invocations.single.arguments;
-      expect(args.first, 'gen');
-      expect(args, containsAllInOrder(['--endpoint', '162.159.192.1:2408']));
-      expect(args, containsAllInOrder(['--dns', '1.1.1.1']));
-      expect(args, containsAllInOrder(['--output', path]));
     });
   });
 

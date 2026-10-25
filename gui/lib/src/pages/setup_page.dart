@@ -10,14 +10,12 @@ class SetupPage extends StatefulWidget {
   const SetupPage({
     super.key,
     required this.onLocate,
-    required this.onToggleTheme,
     this.initialPath = '',
   });
 
   /// Пытается найти бинарник по введённому пути. `false` — не нашли.
   final Future<bool> Function(String path) onLocate;
 
-  final VoidCallback onToggleTheme;
   final String initialPath;
 
   @override
@@ -59,16 +57,7 @@ class _SetupPageState extends State<SetupPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('warpgen'),
-        actions: [
-          IconButton(
-            tooltip: 'Сменить тему',
-            onPressed: widget.onToggleTheme,
-            icon: const Icon(Icons.brightness_6_outlined),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('warpgen')),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),

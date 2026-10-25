@@ -16,3 +16,8 @@ func newRouteManager(opts Options) (RouteManager, error) {
 func RevertTunState(ctx context.Context, opts Options) (int, error) {
 	return 0, ErrUnsupported
 }
+
+// ReadCurrentDNS на не-Linux не реализован.
+func ReadCurrentDNS(ctx context.Context, exec Executor) (DNSInfo, error) {
+	return DNSInfo{}, ErrUnsupported
+}

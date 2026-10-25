@@ -43,6 +43,12 @@ func Run(args []string) error {
 		return runScan(args[1:])
 	case "dns-check":
 		return runDNSCheck(args[1:])
+	case "dns-presets":
+		return runDNSPresets(args[1:])
+	case "dns-current":
+		return runDNSCurrent(args[1:])
+	case "services":
+		return runServices(args[1:])
 	case "gen":
 		return runGen(args[1:])
 	case "chain":
@@ -245,7 +251,7 @@ func runDNSCheck(args []string) error {
 	fs := flag.NewFlagSet("dns-check", flag.ContinueOnError)
 	cf := addCommon(fs)
 	endpoint := fs.String("endpoint", "", "endpoint для проверки (ip:port); если пусто — сначала скан")
-	dnsList := fs.String("dns", strings.Join(config.PresetDNS, ","), "DNS-серверы через запятую (IP или hostname)")
+	dnsList := fs.String("dns", strings.Join(config.DefaultDNSValues(), ","), "DNS-серверы через запятую (IP или hostname)")
 	timeout := fs.Duration("timeout", dnscheck.DefaultTimeout, "таймаут одной проверки")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -548,6 +554,9 @@ func printUsage() {
   register   Зарегистрировать WARP-аккаунт и сохранить в файл
   scan       Просканировать endpoint Cloudflare и показать подходящие
   dns-check  Проверить DNS через туннель на выбранном endpoint
+  dns-presets Показать DNS-пресеты (--resolve — с IP)
+  dns-current Показать DNS текущего подключения (автоопределение)
+  services   Проверить доступность сервисов через SOCKS5
   gen        Сгенерировать .conf для AmneziaWG
   chain      Запустить warp-plus (WARP → Psiphon) поверх внешнего AWG-туннеля
   run        Поднять туннель внутри процесса и отдать SOCKS5 (без root и TUN)

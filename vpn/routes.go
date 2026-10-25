@@ -51,6 +51,17 @@ type ApplyResult struct {
 	DNSWarn string
 }
 
+// DNSInfo — DNS текущего (физического) подключения. Используется пресетом
+// «DNS провайдера»: пользователю не нужно вводить адрес вручную.
+type DNSInfo struct {
+	// Interface — интерфейс маршрута по умолчанию.
+	Interface string `json:"interface,omitempty"`
+	// Servers — DNS-серверы интерфейса или /etc/resolv.conf.
+	Servers []string `json:"servers"`
+	// Warning — предупреждение, например о loopback-заглушке systemd-resolved.
+	Warning string `json:"warning,omitempty"`
+}
+
 // RouteManager — интерфейс применения и отката системных настроек.
 type RouteManager interface {
 	// Apply применяет план. При ошибке сам откатывает применённое.

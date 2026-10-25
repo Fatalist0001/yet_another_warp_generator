@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -321,6 +322,67 @@ func (l *linuxRoutes) linkDomains(ctx context.Context, rec *record, dev string) 
 		return nil
 	}
 	return parseResolvectlList(out)
+}
+
+// ReadCurrentDNS определяет DNS текущего подключения: сначала спрашивает
+// systemd-resolved для интерфейса маршрута по умолчанию, затем читает
+// /etc/resolv.conf. Провайдерские DNS часто приватные (192.168.x.1) и в TUN
+// могут быть недоступны — это не ошибка, а предупреждение в интерфейсе.
+func ReadCurrentDNS(ctx context.Context, exec Executor) (DNSInfo, error) {
+	if exec == nil {
+		exec = osExecutor{}
+	}
+	out, err := exec.Output(ctx, "ip", "route", "show", "default")
+	if err != nil {
+		return DNSInfo{}, fmt.Errorf("vpn: чтение маршрута по умолчанию: %w", err)
+	}
+	_, dev := parseDefaultRoute(out)
+	info := DNSInfo{Interface: dev}
+
+	if dev != "" && exec.LookPath("resolvectl") {
+		if out, err := exec.Output(ctx, "resolvectl", "dns", dev); err == nil {
+			info.Servers = parseResolvectlList(out)
+		}
+	}
+	if len(info.Servers) == 0 {
+		if data, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+			info.Servers = parseResolvConf(string(data))
+		}
+	}
+	if len(info.Servers) == 0 {
+		return info, errors.New("vpn: не удалось определить DNS провайдера")
+	}
+	allLoopback := true
+	for _, server := range info.Servers {
+		host := server
+		if h, _, err := net.SplitHostPort(server); err == nil {
+			host = h
+		}
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			allLoopback = false
+			break
+		}
+	}
+	if allLoopback {
+		info.Warning = "DNS провайдера указывает на loopback-заглушку (systemd-resolved); в TUN он может не работать"
+	}
+	return info, nil
+}
+
+// parseResolvConf достаёт nameserver'ы из /etc/resolv.conf.
+func parseResolvConf(data string) []string {
+	var out []string
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "nameserver" {
+			out = append(out, fields[1])
+		}
+	}
+	return out
 }
 
 // parseResolvectlList достаёт список из вывода `resolvectl dns|domain <линк>`

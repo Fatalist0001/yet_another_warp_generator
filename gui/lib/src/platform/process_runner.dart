@@ -20,7 +20,7 @@ abstract class ProcessRunner {
 
 /// Запущенный процесс: строки stdout/stderr, код возврата и остановка.
 abstract class RunningProcess {
-  /// Строки stdout (у `run --json` — NDJSON, у `scan --json` — один документ).
+  /// Строки stdout (у `run --json` — NDJSON, у остальных команд — один документ).
   Stream<String> get stdout;
 
   /// Строки stderr — диагностика и прогресс.

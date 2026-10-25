@@ -242,4 +242,74 @@ void main() {
     expect(tunnel.status, TunnelStatus.failed);
     expect(tunnel.failure, contains('неожиданный запуск'));
   });
+
+  test('первый запуск регистрирует аккаунт и передаёт выбранный DNS', () async {
+    final runner = FakeProcessRunner();
+    final process = runner.enqueue();
+    final calls = <String>[];
+    final tunnel = TunnelController(
+      cli: fakeCli(runner: runner),
+      ensureAccount: () async {
+        calls.add('account');
+        return null;
+      },
+      dnsResolver: () async {
+        calls.add('dns');
+        return ['dns.comss.one', 'dns.malw.link'];
+      },
+    );
+
+    await tunnel.start();
+
+    expect(calls, ['account', 'dns']);
+    expect(
+      runner.invocations.single.arguments,
+      containsAllInOrder(['--dns', 'dns.comss.one,dns.malw.link']),
+    );
+    await process.finish(0);
+    await flushEvents();
+  });
+
+  test('ошибка аккаунта не запускает процесс', () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(
+      cli: fakeCli(runner: runner),
+      ensureAccount: () async => 'нет сети для регистрации',
+    );
+
+    await tunnel.start();
+
+    expect(tunnel.status, TunnelStatus.failed);
+    expect(tunnel.failure, contains('нет сети'));
+    expect(runner.invocations, isEmpty);
+  });
+
+  test('ошибка DNS не запускает процесс', () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(
+      cli: fakeCli(runner: runner),
+      dnsResolver: () async => throw StateError('DNS недоступен'),
+    );
+
+    await tunnel.start();
+
+    expect(tunnel.status, TunnelStatus.failed);
+    expect(tunnel.failure, contains('DNS недоступен'));
+    expect(runner.invocations, isEmpty);
+  });
+
+  test('пустой список стран в режиме Psiphon не запускает процесс', () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(cli: fakeCli(runner: runner));
+    tunnel.setWarpOnly(false);
+    for (final code in tunnel.countries.toList()) {
+      tunnel.toggleCountry(code);
+    }
+
+    await tunnel.start();
+
+    expect(tunnel.status, TunnelStatus.failed);
+    expect(tunnel.failure, contains('страну'));
+    expect(runner.invocations, isEmpty);
+  });
 }

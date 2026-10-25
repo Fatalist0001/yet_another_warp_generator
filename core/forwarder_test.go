@@ -42,6 +42,23 @@ func echoOnce(t *testing.T, addr string, payload []byte, timeout time.Duration) 
 	return roundTrip(dialForwarder(t, addr), payload, timeout)
 }
 
+// waitForwarderStats ждёт, пока счётчики догонят уже полученный ответ: запись
+// клиенту и инкремент статистики в форвардере идут разными горутинами.
+func waitForwarderStats(t *testing.T, f *Forwarder, cond func(ForwarderStats) bool) ForwarderStats {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		stats := f.Stats()
+		if cond(stats) {
+			return stats
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("счётчики форвардера не догнали ответ: %+v", stats)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestForwarderRelaysThroughTunnel(t *testing.T) {
 	echo := udpEcho(t)
 	fleet := &tunnelFleet{echo: echo}
@@ -72,13 +89,11 @@ func TestForwarderRelaysThroughTunnel(t *testing.T) {
 		t.Errorf("эхо вернуло %q, ожидали \"ping\"", got)
 	}
 
-	stats := f.Stats()
+	stats := waitForwarderStats(t, f, func(s ForwarderStats) bool {
+		return s.PacketsFromClient == 1 && s.PacketsFromTunnel == 1
+	})
 	if stats.Sessions != 1 {
 		t.Errorf("сессий = %d, ожидали 1", stats.Sessions)
-	}
-	if stats.PacketsFromClient != 1 || stats.PacketsFromTunnel != 1 {
-		t.Errorf("пакетов клиент→туннель = %d, туннель→клиент = %d, ожидали по 1",
-			stats.PacketsFromClient, stats.PacketsFromTunnel)
 	}
 }
 
@@ -99,11 +114,10 @@ func TestForwarderReusesSession(t *testing.T) {
 			t.Fatalf("пакет %d: %v", i, err)
 		}
 	}
-	if s := f.Stats(); s.Sessions != 1 {
+	if s := waitForwarderStats(t, f, func(s ForwarderStats) bool {
+		return s.PacketsFromClient == 3
+	}); s.Sessions != 1 {
 		t.Errorf("сессий = %d, ожидали 1 (сессия переиспользуется)", s.Sessions)
-	}
-	if s := f.Stats(); s.PacketsFromClient != 3 {
-		t.Errorf("пакетов от клиента = %d, ожидали 3", s.PacketsFromClient)
 	}
 }
 
@@ -136,7 +150,9 @@ func TestForwarderOversizeCounted(t *testing.T) {
 		t.Errorf("большой пакет вернулся искажённым (%d байт)", len(got))
 	}
 
-	if s := f.Stats(); s.Oversize != 1 {
+	if s := waitForwarderStats(t, f, func(s ForwarderStats) bool {
+		return s.Oversize == 1
+	}); s.Oversize != 1 {
 		t.Errorf("oversize = %d, ожидали 1", s.Oversize)
 	}
 	found := false

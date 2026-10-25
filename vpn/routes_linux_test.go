@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -523,6 +524,53 @@ func TestParseDefaultRoute(t *testing.T) {
 				t.Errorf("получили (%q, %q), ожидали (%q, %q)", gw, dev, c.gw, c.dev)
 			}
 		})
+	}
+}
+
+func TestReadCurrentDNS(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.defaultRoute = "default via 10.0.0.1 dev wlan0 proto dhcp metric 600\n"
+	exec.linkDNS = "Link 3 (wlan0): 10.0.0.1 8.8.8.8\n"
+
+	info, err := ReadCurrentDNS(context.Background(), exec)
+	if err != nil {
+		t.Fatalf("ReadCurrentDNS: %v", err)
+	}
+	if info.Interface != "wlan0" {
+		t.Errorf("интерфейс = %q, ожидали wlan0", info.Interface)
+	}
+	if want := []string{"10.0.0.1", "8.8.8.8"}; !slices.Equal(info.Servers, want) {
+		t.Errorf("DNS = %v, ожидали %v", info.Servers, want)
+	}
+	if info.Warning != "" {
+		t.Errorf("неожиданное предупреждение: %q", info.Warning)
+	}
+}
+
+func TestReadCurrentDNSWarnsLoopback(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.linkDNS = "Link 2 (eth0): 127.0.0.53\n"
+
+	info, err := ReadCurrentDNS(context.Background(), exec)
+	if err != nil {
+		t.Fatalf("ReadCurrentDNS: %v", err)
+	}
+	if info.Warning == "" {
+		t.Error("для loopback-заглушки ожидали предупреждение")
+	}
+}
+
+func TestParseResolvConf(t *testing.T) {
+	data := `# комментарий
+nameserver 1.1.1.1
+; ещё комментарий
+nameserver 2606:4700:4700::1111
+search example.org
+`
+	got := parseResolvConf(data)
+	want := []string{"1.1.1.1", "2606:4700:4700::1111"}
+	if !slices.Equal(got, want) {
+		t.Errorf("nameserver'ы = %v, ожидали %v", got, want)
 	}
 }
 
