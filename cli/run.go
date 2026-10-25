@@ -46,6 +46,10 @@ func runRun(args []string) error {
 	strict := fs.Bool("strict", true, "страна должна совпасть с запрошенной (--strict=false — только «не RU»)")
 	maxCand := fs.Int("max", 512, "сколько кандидатов проверять за скан")
 	strictRegion := fs.Bool("strict-region", false, "жёсткий скан: отвергать endpoint'ы с регионом RU")
+	endpointCache := fs.String("endpoint-cache", "", "файл кэша выбранных endpoint'ов (первый запуск замеряет скорость, следующие берут готовые)")
+	speedURL := fs.String("speed-url", core.DefaultSpeedURL, "URL файла для замера скорости при первичной настройке кэша")
+	speedBytes := fs.Int64("speed-bytes", core.DefaultSpeedBytes, "сколько байт скачивать для замера скорости")
+	speedTimeout := fs.Duration("speed-timeout", core.DefaultSpeedTimeout, "потолок одного замера скорости")
 	monitorInterval := fs.Duration("monitor-interval", core.DefaultMonitorInterval, "как часто проверять живую цепочку")
 	monitorFailures := fs.Int("monitor-failures", core.DefaultMonitorFailures, "сколько проверок выхода подряд без ответа считать сломанным звеном")
 	traceFailures := fs.Int("trace-failures", core.DefaultTraceFailures, "сколько подряд неудач trace через туннель считать мёртвым туннелем")
@@ -121,6 +125,10 @@ func runRun(args []string) error {
 		Endpoints:       *endpoints,
 		MaxCandidates:   *maxCand,
 		StrictRegion:    *strictRegion,
+		EndpointCache:   *endpointCache,
+		SpeedURL:        *speedURL,
+		SpeedBytes:      *speedBytes,
+		SpeedTimeout:    *speedTimeout,
 		TestURL:         *testURL,
 		ReadyTimeout:    *readyTimeout,
 		Attempts:        *attempts,

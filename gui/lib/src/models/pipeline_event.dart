@@ -19,6 +19,8 @@ class PipelineEvent {
     this.colo,
     this.region,
     this.rttMs,
+    this.mbps,
+    this.bytes,
     this.forwarder,
     this.socks,
     this.country,
@@ -44,6 +46,8 @@ class PipelineEvent {
       colo: _optional(json['colo']),
       region: _optional(json['region']),
       rttMs: _int(json['rtt_ms']),
+      mbps: _double(json['mbps']),
+      bytes: _int(json['bytes']),
       forwarder: _optional(json['forwarder']),
       socks: _optional(json['socks']),
       country: _optional(json['country']),
@@ -70,6 +74,8 @@ class PipelineEvent {
   final String? colo;
   final String? region;
   final int? rttMs;
+  final double? mbps;
+  final int? bytes;
   final String? forwarder;
   final String? socks;
   final String? country;
@@ -117,11 +123,17 @@ class PipelineEvent {
         if (_filled(colo)) parts.add('узел $colo');
         if (_filled(region)) parts.add('регион $region');
         if ((rttMs ?? 0) > 0) parts.add('$rttMs мс');
+        if ((mbps ?? 0) > 0) parts.add('${_mbps(mbps!)} Мбит/с');
         return parts.join(', ');
       case 'outer_up':
         return 'внешний туннель поднят: ${_dash(endpoint)}';
       case 'outer_checked':
         return 'трафик через туннель проверен (warp=on, узел ${_dash(colo)})';
+      case 'speed_testing':
+        return 'измеряем скорость endpoint ${_dash(endpoint)}';
+      case 'speed_checked':
+        return 'скорость endpoint ${_dash(endpoint)}: '
+            '${_mbps(mbps ?? 0)} Мбит/с';
       case 'forwarder_up':
         return 'UDP-форвардер слушает ${_dash(forwarder)}';
       case 'socks_up':
@@ -196,6 +208,12 @@ double? _double(Object? value) {
 }
 
 String _dash(String? value) => _filled(value) ? value!.trim() : '?';
+
+String _mbps(double value) {
+  if (value >= 100) return value.toStringAsFixed(0);
+  if (value >= 10) return value.toStringAsFixed(1);
+  return value.toStringAsFixed(2);
+}
 
 String _seconds(double value) {
   final total = value.round();

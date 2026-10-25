@@ -31,6 +31,9 @@ class AppDependencies {
 
   /// Файл настроек GUI.
   String get settingsPath => '$homeDir/.warpgen/gui.json';
+
+  /// Кэш endpoint'ов, выбранных по скорости при первой настройке.
+  String get endpointCachePath => '$homeDir/.warpgen/endpoints.json';
 }
 
 /// Приложение warpgen.
@@ -171,6 +174,7 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
         // Процесс под pkexec — root, SIGINT из GUI ему недоступен: остановка
         // идёт файлом, который CLI проверяет сам.
         stopFile: '$_homeDir/.warpgen/run/tun.stop',
+        endpointCache: '$_homeDir/.warpgen/endpoints.json',
       ),
       homeDir: _homeDir,
     );
@@ -301,11 +305,20 @@ class _Shell extends StatelessWidget {
               const Text('warpgen'),
             ],
           ),
-          bottom: const TabBar(
-            tabs: [
-              Tab(icon: Icon(Icons.power_settings_new), text: 'Подключение'),
-              Tab(icon: Icon(Icons.tune), text: 'Настройки'),
-            ],
+        ),
+        bottomNavigationBar: DecoratedBox(
+          decoration: BoxDecoration(
+            color: scheme.surface,
+            border: Border(top: BorderSide(color: scheme.outlineVariant)),
+          ),
+          child: const SafeArea(
+            top: false,
+            child: TabBar(
+              tabs: [
+                Tab(icon: Icon(Icons.power_settings_new), text: 'Подключение'),
+                Tab(icon: Icon(Icons.tune), text: 'Настройки'),
+              ],
+            ),
           ),
         ),
         body: TabBarView(

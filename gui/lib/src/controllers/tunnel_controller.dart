@@ -91,6 +91,7 @@ class TunnelController extends ChangeNotifier {
   String? _colo;
   String? _dns;
   int? _rttMs;
+  double? _speedMbps;
   DateTime? _readyAt;
   Duration? _prepareTime;
   bool _warpOnly = true;
@@ -135,6 +136,9 @@ class TunnelController extends ChangeNotifier {
 
   /// Задержка выбранного endpoint, мс.
   int? get rttMs => _rttMs;
+
+  /// Скорость, измеренная через итоговый выход при первичной настройке.
+  double? get speedMbps => _speedMbps;
 
   /// Резолвер, который выбрала цепочка (режим `--tun`).
   String? get dns => _dns;
@@ -383,6 +387,7 @@ class TunnelController extends ChangeNotifier {
     _colo = null;
     _dns = null;
     _rttMs = null;
+    _speedMbps = null;
     _readyAt = null;
     _prepareTime = null;
     _journal.clear();
@@ -418,10 +423,29 @@ class TunnelController extends ChangeNotifier {
         _endpoint = event.endpoint;
         _colo = event.colo;
         _rttMs = event.rttMs;
+        if ((event.mbps ?? 0) > 0) _speedMbps = event.mbps;
+        final speed = (_speedMbps ?? 0) > 0
+            ? ' · ${_formatMbps(_speedMbps!)} Мбит/с'
+            : '';
         _setStatus(
           TunnelStatus.starting,
           'Выбран endpoint',
-          '${event.endpoint ?? '?'} · узел ${event.colo ?? '?'} · ${event.rttMs ?? 0} мс',
+          '${event.endpoint ?? '?'} · узел ${event.colo ?? '?'} · ${event.rttMs ?? 0} мс$speed',
+        );
+        break;
+      case 'speed_testing':
+        _setStatus(
+          TunnelStatus.starting,
+          'Проверяем скорость',
+          'endpoint ${event.endpoint ?? '?'} — первый запуск',
+        );
+        break;
+      case 'speed_checked':
+        _speedMbps = event.mbps;
+        _setStatus(
+          TunnelStatus.starting,
+          'Скорость измерена',
+          '${_formatMbps(event.mbps ?? 0)} Мбит/с · выбираем лучший endpoint',
         );
         break;
       case 'outer_up':
@@ -509,6 +533,9 @@ class TunnelController extends ChangeNotifier {
     if ((_country ?? '').isNotEmpty) parts.add('страна $_country');
     if ((_ip ?? '').isNotEmpty) parts.add('IP $_ip');
     if ((_org ?? '').isNotEmpty) parts.add('$_org');
+    if ((_speedMbps ?? 0) > 0) {
+      parts.add('${_formatMbps(_speedMbps!)} Мбит/с');
+    }
     if (_tun) parts.add('весь трафик машины идёт по цепочке');
     if (parts.isEmpty) return 'SOCKS5 готов';
     return parts.join(' · ');
@@ -576,6 +603,12 @@ class TunnelController extends ChangeNotifier {
     } on TimeoutException {
       // Потоки уже не нужны: процесс завершился.
     }
+  }
+
+  String _formatMbps(double value) {
+    if (value >= 100) return value.toStringAsFixed(0);
+    if (value >= 10) return value.toStringAsFixed(1);
+    return value.toStringAsFixed(2);
   }
 
   void _setStatus(TunnelStatus status, String headline, String detail) {

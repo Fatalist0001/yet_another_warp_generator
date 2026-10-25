@@ -67,6 +67,43 @@ void main() {
     expect(tunnel.headline, 'Туннель выключен');
   });
 
+  test('замер скорости показывается до и после готовности', () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(cli: fakeCli(runner: runner));
+    final process = runner.enqueue();
+
+    await tunnel.start();
+    process
+      ..emitEvent(const {
+        'event': 'speed_testing',
+        'endpoint': '162.159.192.1:2408',
+      })
+      ..emitEvent(const {
+        'event': 'speed_checked',
+        'endpoint': '162.159.192.1:2408',
+        'mbps': 42.5,
+        'bytes': 524288,
+      })
+      ..emitEvent(const {
+        'event': 'endpoint_selected',
+        'endpoint': '162.159.192.1:2408',
+        'colo': 'AMS',
+        'rtt_ms': 42,
+        'mbps': 42.5,
+      })
+      ..emitEvent(const {
+        'event': 'ready',
+        'socks': '127.0.0.1:8086',
+        'country': 'RU',
+        'ip': '203.0.113.9',
+      });
+    await flushEvents();
+
+    expect(tunnel.speedMbps, closeTo(42.5, 0.001));
+    expect(tunnel.status, TunnelStatus.live);
+    expect(tunnel.detail, contains('42.5 Мбит/с'));
+  });
+
   test(
       'системный туннель уходит в CLI через pkexec и не меняется во время работы',
       () async {

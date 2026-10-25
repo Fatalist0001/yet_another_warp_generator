@@ -44,6 +44,13 @@ type Options struct {
 	MaxCandidates int
 	// StrictRegion — жёсткий режим скана: отвергать endpoint'ы с регионом RU.
 	StrictRegion bool
+	// EndpointCache — файл кэша выбранных endpoint'ов ("" — без кэша).
+	EndpointCache string
+	// SpeedURL / SpeedBytes / SpeedTimeout — параметры замера скорости при
+	// первичной настройке кэша.
+	SpeedURL     string
+	SpeedBytes   int64
+	SpeedTimeout time.Duration
 
 	// TestURL / ReadyTimeout / Attempts / Strict — параметры warp-plus (см. chain).
 	TestURL      string
@@ -129,6 +136,10 @@ func NewConfig(opts Options) (Config, error) {
 		Chain:            chainRunner{opts: chainOptions(opts)},
 		Prober:           geoProber{services: chain.DefaultGeoServices},
 		Clock:            opts.Clock,
+		ProfilePath:      opts.EndpointCache,
+		SpeedURL:         opts.SpeedURL,
+		SpeedBytes:       opts.SpeedBytes,
+		SpeedTimeout:     opts.SpeedTimeout,
 		Logf:             opts.Logf,
 		Preflight:        preflightFn(opts),
 		MTU:              warpCfg.MTU,
@@ -261,6 +272,9 @@ func (c chainRunner) Run(ctx context.Context, req ChainRequest) (*ChainSession, 
 	opts := c.opts
 	opts.Endpoint = req.Forwarder
 	opts.Countries = req.Countries
+	if req.Bind != "" {
+		opts.Bind = req.Bind
+	}
 
 	sess, err := chain.RunThrough(ctx, opts)
 	if err != nil {

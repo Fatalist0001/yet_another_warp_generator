@@ -21,6 +21,7 @@ class TerminalPanel extends StatefulWidget {
 class _TerminalPanelState extends State<TerminalPanel> {
   final ScrollController _scroll = ScrollController();
   bool _stickToBottom = true;
+  int _lastCount = 0;
 
   @override
   void dispose() {
@@ -34,7 +35,12 @@ class _TerminalPanelState extends State<TerminalPanel> {
       animation: widget.tunnel,
       builder: (context, _) {
         final entries = widget.tunnel.journal;
-        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+        // Автопрокрутку планируем только когда появилась новая запись, а не
+        // на каждое событие: иначе прокрутка и перестройка списка конкурируют.
+        if (entries.length != _lastCount) {
+          _lastCount = entries.length;
+          WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+        }
         final theme = Theme.of(context);
         final scheme = theme.colorScheme;
         return Container(
@@ -95,18 +101,16 @@ class _TerminalPanelState extends State<TerminalPanel> {
                           }
                           return false;
                         },
-                        child: SelectionArea(
-                          child: ListView.builder(
-                            controller: _scroll,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 10,
-                            ),
-                            itemCount: entries.length,
-                            itemBuilder: (context, index) {
-                              return _Line(entry: entries[index]);
-                            },
+                        child: ListView.builder(
+                          controller: _scroll,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 10,
                           ),
+                          itemCount: entries.length,
+                          itemBuilder: (context, index) {
+                            return _Line(entry: entries[index]);
+                          },
                         ),
                       ),
               ),

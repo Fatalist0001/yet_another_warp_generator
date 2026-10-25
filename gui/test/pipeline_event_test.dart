@@ -40,6 +40,32 @@ void main() {
       expect(event.severity, EventSeverity.info);
     });
 
+    test('разбирает замер скорости', () {
+      final testing = PipelineEvent.fromJson(const {
+        'event': 'speed_testing',
+        'endpoint': '162.159.192.1:2408',
+      });
+      expect(testing.description, contains('измеряем скорость'));
+      expect(testing.description, contains('162.159.192.1:2408'));
+
+      final checked = PipelineEvent.fromJson(const {
+        'event': 'speed_checked',
+        'endpoint': '162.159.192.1:2408',
+        'mbps': 42.5,
+        'bytes': 524288,
+      });
+      expect(checked.mbps, closeTo(42.5, 0.001));
+      expect(checked.bytes, 524288);
+      expect(checked.description, contains('42.5 Мбит/с'));
+
+      final selected = PipelineEvent.fromJson(const {
+        'event': 'endpoint_selected',
+        'endpoint': '162.159.192.1:2408',
+        'mbps': 42.5,
+      });
+      expect(selected.description, contains('42.5 Мбит/с'));
+    });
+
     test('просадка — предупреждение, остановка с ошибкой — ошибка', () {
       final degraded = PipelineEvent.fromJson(const {
         'event': 'degraded',

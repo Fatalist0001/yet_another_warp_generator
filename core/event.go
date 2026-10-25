@@ -18,6 +18,11 @@ const (
 	EventOuterUp Kind = "outer_up"
 	// EventOuterChecked — трафик изнутри туннеля проверен (trace: warp=on, узел не исключён).
 	EventOuterChecked Kind = "outer_checked"
+	// EventSpeedTesting — начинается замер скорости endpoint'а при первичной
+	// настройке (в кэше ещё нет выбранной конфигурации).
+	EventSpeedTesting Kind = "speed_testing"
+	// EventSpeedChecked — скорость endpoint'а измерена.
+	EventSpeedChecked Kind = "speed_checked"
 	// EventForwarderUp — UDP-форвардер слушает локальный адрес.
 	EventForwarderUp Kind = "forwarder_up"
 	// EventSocksUp — локальный SOCKS5-сервер поднят над внешним туннелем
@@ -58,6 +63,9 @@ type Event struct {
 	Colo     string `json:"colo,omitempty"`
 	Region   string `json:"region,omitempty"`
 	RTTMS    int64  `json:"rtt_ms,omitempty"`
+	// Mbps / Bytes — результат замера скорости через выбранный выход.
+	Mbps  float64 `json:"mbps,omitempty"`
+	Bytes int64   `json:"bytes,omitempty"`
 
 	// Forwarder — локальный адрес UDP-форвардера (его получает warp-plus в -e).
 	Forwarder string `json:"forwarder,omitempty"`
@@ -101,11 +109,18 @@ func (e Event) String() string {
 		if e.RTTMS > 0 {
 			parts = append(parts, fmt.Sprintf("%dms", e.RTTMS))
 		}
+		if e.Mbps > 0 {
+			parts = append(parts, fmt.Sprintf("%.1f Мбит/с", e.Mbps))
+		}
 		return "выбран " + strings.Join(parts, ", ")
 	case EventOuterUp:
 		return "внешний туннель поднят: " + dash(e.Endpoint)
 	case EventOuterChecked:
 		return "трафик через туннель проверен (warp=on, узел " + dash(e.Colo) + ")"
+	case EventSpeedTesting:
+		return "измеряем скорость endpoint " + dash(e.Endpoint)
+	case EventSpeedChecked:
+		return fmt.Sprintf("скорость endpoint %s: %.1f Мбит/с", dash(e.Endpoint), e.Mbps)
 	case EventForwarderUp:
 		return "UDP-форвардер слушает " + dash(e.Forwarder)
 	case EventSocksUp:

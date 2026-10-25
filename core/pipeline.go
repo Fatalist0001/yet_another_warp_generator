@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -66,7 +68,7 @@ func (r *runner) pipeline(ctx context.Context) error {
 		}()
 	}
 
-	cands, err := r.cfg.Locator.Locate(ctx, r.cfg.Endpoints)
+	cands, cached, err := r.loadOrLocate(ctx, false)
 	if err != nil {
 		return fmt.Errorf("поиск endpoint: %w", err)
 	}
@@ -77,6 +79,7 @@ func (r *runner) pipeline(ctx context.Context) error {
 	cursor := 0
 	initialLeft := len(cands)
 	holding := false
+	retried := false
 
 	for {
 		if ctx.Err() != nil {
@@ -101,9 +104,212 @@ func (r *runner) pipeline(ctx context.Context) error {
 			continue
 		}
 		if !holding && initialLeft <= 0 {
+			// Кэш мог устареть: например, endpoint перестал отвечать после
+			// смены сети. Один раз пересканируем и заново выберем по скорости.
+			if cached && !retried {
+				retried = true
+				if err := RemoveProfile(r.cfg.ProfilePath); err != nil {
+					r.log("кэш endpoint'ов: %v", err)
+				}
+				cands, cached, err = r.loadOrLocate(ctx, true)
+				if err != nil {
+					return fmt.Errorf("поиск endpoint: %w", err)
+				}
+				if len(cands) == 0 {
+					return errors.New("подходящих endpoint не найдено — проверьте сеть и посторонний VPN")
+				}
+				cursor = 0
+				initialLeft = len(cands)
+				continue
+			}
 			return fmt.Errorf("не удалось поднять цепочку ни на одном из %d endpoint'ов", len(cands))
 		}
 	}
+}
+
+// loadOrLocate берёт готовый список endpoint'ов из кэша или ищет новый.
+//
+// Первый запуск (или запуск после «Пересоздать конфигурацию») измеряет скорость
+// через итоговый выход и сохраняет порядок. Следующие запуски не сканируют и не
+// меряют: условия сети считаются статичными, а сохранённая конфигурация уже
+// выбрана по скорости.
+func (r *runner) loadOrLocate(ctx context.Context, forceScan bool) ([]Endpoint, bool, error) {
+	mode, countries := r.profileMode()
+	if !forceScan && r.cfg.ProfilePath != "" {
+		eps, ok, err := LoadProfile(r.cfg.ProfilePath, mode, countries)
+		if err != nil {
+			r.log("кэш endpoint'ов: %v", err)
+		} else if ok {
+			r.log("используем сохранённые endpoint'ы: %d", len(eps))
+			return eps, true, nil
+		}
+	}
+
+	cands, err := r.cfg.Locator.Locate(ctx, r.cfg.Endpoints)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(cands) == 0 {
+		return nil, false, errors.New("подходящих endpoint не найдено — проверьте сеть и посторонний VPN")
+	}
+	if r.cfg.ProfilePath != "" && r.cfg.SpeedTest != nil {
+		ranked, measured := r.selectFastest(ctx, cands)
+		cands = ranked
+		if ctx.Err() != nil {
+			return cands, false, nil
+		}
+		if !measured {
+			r.log("замер скорости не удался: сохраняем порядок по RTT")
+		}
+		if err := SaveProfile(r.cfg.ProfilePath, mode, countries, cands); err != nil {
+			r.log("кэш endpoint'ов: %v", err)
+		}
+	}
+	return cands, false, nil
+}
+
+// profileMode — ключ кэша. Скорость WARP и итоговая скорость WARP → Psiphon
+// различаются, а у Psiphon ещё и зависит от порядка стран.
+func (r *runner) profileMode() (string, []string) {
+	if r.cfg.Direct {
+		return ProfileWarpOnly, nil
+	}
+	return ProfilePsiphon, append([]string(nil), r.cfg.Countries...)
+}
+
+// selectFastest проверяет кандидатов через итоговый выход и сортирует по
+// скорости. Неудачные замеры остаются в конце как запасные варианты.
+func (r *runner) selectFastest(ctx context.Context, cands []Endpoint) ([]Endpoint, bool) {
+	type scored struct {
+		ep Endpoint
+		ok bool
+	}
+	out := make([]scored, 0, len(cands))
+	measured := false
+	for _, ep := range cands {
+		if ctx.Err() != nil {
+			break
+		}
+		r.emit(Event{
+			Kind:     EventSpeedTesting,
+			Endpoint: ep.Addr,
+			Colo:     ep.Colo,
+			Region:   ep.Loc,
+			RTTMS:    ms(ep.RTT),
+		})
+		res, err := r.measureEndpointSpeed(ctx, ep)
+		if err != nil {
+			r.log("замер скорости %s: %v", ep.Addr, err)
+			out = append(out, scored{ep: ep})
+			continue
+		}
+		ep.SpeedMbps = res.Mbps
+		measured = true
+		r.emit(Event{
+			Kind:     EventSpeedChecked,
+			Endpoint: ep.Addr,
+			Colo:     ep.Colo,
+			Region:   ep.Loc,
+			RTTMS:    ms(ep.RTT),
+			Mbps:     res.Mbps,
+			Bytes:    res.Bytes,
+		})
+		out = append(out, scored{ep: ep, ok: true})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].ok != out[j].ok {
+			return out[i].ok
+		}
+		if out[i].ok && out[i].ep.SpeedMbps != out[j].ep.SpeedMbps {
+			return out[i].ep.SpeedMbps > out[j].ep.SpeedMbps
+		}
+		return out[i].ep.RTT < out[j].ep.RTT
+	})
+	ranked := make([]Endpoint, len(out))
+	for i := range out {
+		ranked[i] = out[i].ep
+	}
+	return ranked, measured
+}
+
+// measureEndpointSpeed поднимает итоговый выход на одном кандидате и меряет
+// скорость через его SOCKS5. В Direct это сам WARP, в режиме с Psiphon — вся
+// цепочка WARP → Psiphon.
+func (r *runner) measureEndpointSpeed(ctx context.Context, ep Endpoint) (SpeedResult, error) {
+	tn, err := r.cfg.Tunnel()
+	if err != nil {
+		return SpeedResult{}, fmt.Errorf("туннель: %w", err)
+	}
+	defer tn.Close()
+
+	if !tn.Handshake(ctx, ep.Addr, r.cfg.HandshakeTimeout) {
+		return SpeedResult{}, errors.New("нет хендшейка")
+	}
+	tr, err := tn.FetchTrace(ctx, r.cfg.TraceTimeout)
+	if err != nil {
+		return SpeedResult{}, fmt.Errorf("trace: %w", err)
+	}
+	if reason := traceProblem(tr); reason != "" {
+		return SpeedResult{}, errors.New(reason)
+	}
+
+	if r.cfg.Direct {
+		if r.proxy == nil {
+			return SpeedResult{}, errors.New("SOCKS5 не поднят")
+		}
+		r.proxy.SetTunnel(tn)
+		defer r.proxy.SetTunnel(nil)
+		return r.cfg.SpeedTest(ctx, r.proxy.Addr(), ep.Addr)
+	}
+
+	fwd, err := NewForwarder(tn, ForwarderOptions{
+		Listen:      r.cfg.Listen,
+		Target:      r.cfg.InnerEndpoint,
+		MTU:         r.cfg.MTU,
+		SessionTTL:  r.cfg.SessionTTL,
+		MaxSessions: r.cfg.MaxSessions,
+		Logf:        r.cfg.Logf,
+	})
+	if err != nil {
+		return SpeedResult{}, fmt.Errorf("форвардер: %w", err)
+	}
+	go func() {
+		if err := fwd.Run(ctx); err != nil && ctx.Err() == nil {
+			r.log("форвардер (замер скорости) остановился: %v", err)
+		}
+	}()
+	defer fwd.Close()
+
+	// Для сравнения endpoint'ов достаточно первой страны: полный перебор
+	// стран здесь только растянул бы первичную настройку. Реальный запуск
+	// ниже идёт по всему списку приоритетов.
+	countries := r.cfg.Countries
+	if len(countries) > 1 {
+		countries = countries[:1]
+	}
+	sess, err := r.cfg.Chain.Run(ctx, ChainRequest{
+		Forwarder: fwd.Addr(),
+		Countries: countries,
+		Bind:      freeLoopbackAddr(),
+	})
+	if err != nil {
+		return SpeedResult{}, err
+	}
+	defer sess.Close()
+	return r.cfg.SpeedTest(ctx, sess.SOCKS, ep.Addr)
+}
+
+// freeLoopbackAddr занимает и сразу освобождает loopback-порт. Замер скорости
+// идёт последовательно, поэтому гонка за порт маловероятна; если занять не
+// удалось, chainRunner возьмёт адрес из настроек.
+func freeLoopbackAddr() string {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return ""
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr
 }
 
 // endpointRound пробует один внешний endpoint: туннель → проверка трафика →
@@ -116,6 +322,7 @@ func (r *runner) endpointRound(ctx context.Context, ep Endpoint) (bool, error) {
 		Colo:     ep.Colo,
 		Region:   ep.Loc,
 		RTTMS:    ms(ep.RTT),
+		Mbps:     ep.SpeedMbps,
 	})
 
 	// Смена внешнего endpoint: исключение /32 обновляем до создания туннеля,

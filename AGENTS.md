@@ -92,7 +92,9 @@ GOPROXY=off go test ./... -short
   сканера в GUI нет, отдельный `.conf` не создаётся.
 - Настройки GUI — `~/.warpgen/gui.json` (только выбор пользователя, без ключей).
   Аккаунт создаётся автоматически при первом включении; «Пересоздать
-  конфигурацию» делает `register --fresh` и удаляет identity warp-plus.
+  конфигурацию» делает `register --fresh`, удаляет identity warp-plus и профиль
+  endpoint'ов `~/.warpgen/endpoints.json` (чтобы следующий запуск снова выбрал их
+  по скорости).
 - Приватный ключ аккаунта в интерфейс не попадает: `AccountInfo` его не содержит,
   в журнал и snackbar’ы уходят только адреса, страны и пути к файлам.
 - Тема — Material 3 (`useMaterial3`, `ColorScheme.fromSeed`), без внешних
@@ -183,9 +185,15 @@ GOPROXY=off go test ./... -short
   пока поднимается новое звено.
 - MTU внешнего туннеля — 1280. Пакеты больше MTU считаем как `oversize` (счётчик +
   запись в `Logf`) и передаём как есть: процесс не роняем.
-- События (`endpoint_selected`, `outer_up`, `outer_checked`, `forwarder_up`,
-  `psiphon_starting`, `ready`, `degraded`, `failover`, `stopped`) — публичный
-  контракт CLI и будущих клиентов: имена не менять без нужды, секретов в них нет.
+- Профиль endpoint'ов (`Config.ProfilePath`, CLI `--endpoint-cache`) — первый
+  запуск сканирует и меряет скорость через итоговый выход (в Direct — WARP, с
+  Psiphon — цепочку), сортирует по ней и сохраняет; следующие запуски не
+  сканируют и не меряют. Профиль не содержит ключей. Замер — новый сетевой эффект,
+  поэтому идёт только через `Config.SpeedTest` (в тестах подменяется).
+- События (`endpoint_selected`, `outer_up`, `outer_checked`, `speed_testing`,
+  `speed_checked`, `forwarder_up`, `psiphon_starting`, `ready`, `degraded`,
+  `failover`, `stopped`) — публичный контракт CLI и будущих клиентов: имена не
+  менять без нужды, секретов в них нет.
 - Сетевые проверки пайплайна — за тегом `e2e` (`core/e2e_run_test.go`), в
   `go test ./...` они не попадают. Обычные тесты — только loopback (локальное
   UDP-эхо) и фейки, без обращений во внешнюю сеть.

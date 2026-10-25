@@ -66,6 +66,7 @@ class WarpgenCli {
     this.cacheDir,
     this.elevDir,
     this.stopFile,
+    this.endpointCache,
   });
 
   final ProcessRunner runner;
@@ -87,6 +88,13 @@ class WarpgenCli {
   /// создаёт этот файл, а CLI замечает его и завершает пайплайн сам, успев
   /// снять TUN и маршруты. Пусто — остановка только сигналом.
   final String? stopFile;
+
+  /// Файл кэша endpoint'ов, выбранных по скорости при первой настройке.
+  ///
+  /// Пока файла нет, CLI сканирует endpoint'ы и меряет итоговую скорость; при
+  /// следующих подключениях берёт готовый список. «Пересоздать конфигурацию»
+  /// удаляет файл, и замер повторяется.
+  final String? endpointCache;
 
   String get binaryPath => location.binaryPath;
 
@@ -114,6 +122,7 @@ class WarpgenCli {
       accountFile,
       '--bind',
       bind,
+      if (_filled(endpointCache)) ...['--endpoint-cache', endpointCache!],
       if (dns.isNotEmpty) ...['--dns', dns.join(',')],
       if (tun) '--tun',
       if (warpOnly)
@@ -249,6 +258,23 @@ class WarpgenCli {
     } on FileSystemException catch (error) {
       throw WarpgenException(
         'не удалось удалить identity warp-plus: ${error.message}',
+      );
+    }
+  }
+
+  /// Удаляет кэш endpoint'ов при пересоздании конфигурации.
+  ///
+  /// Следующее подключение снова выберет endpoint'ы по скорости. Файла может
+  /// не быть — это не ошибка.
+  Future<void> clearEndpointCache() async {
+    final path = endpointCache?.trim();
+    if (path == null || path.isEmpty) return;
+    try {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } on FileSystemException catch (error) {
+      throw WarpgenException(
+        'не удалось удалить кэш endpoint\'ов: ${error.message}',
       );
     }
   }

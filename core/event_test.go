@@ -13,10 +13,12 @@ func TestEventString(t *testing.T) {
 		ev   Event
 		want []string
 	}{
-		{"выбор endpoint", Event{Kind: EventEndpointSelected, Endpoint: "162.159.192.1:2408", Colo: "HEL", Region: "RU", RTTMS: 84},
-			[]string{"162.159.192.1:2408", "HEL", "RU", "84ms"}},
+		{"выбор endpoint", Event{Kind: EventEndpointSelected, Endpoint: "162.159.192.1:2408", Colo: "HEL", Region: "RU", RTTMS: 84, Mbps: 42.5},
+			[]string{"162.159.192.1:2408", "HEL", "RU", "84ms", "42.5"}},
 		{"туннель поднят", Event{Kind: EventOuterUp, Endpoint: "162.159.192.1:2408"}, []string{"162.159.192.1:2408"}},
 		{"трафик проверен", Event{Kind: EventOuterChecked, Colo: "FRA"}, []string{"warp=on", "FRA"}},
+		{"замер скорости", Event{Kind: EventSpeedTesting, Endpoint: "162.159.192.1:2408"}, []string{"162.159.192.1:2408", "скорость"}},
+		{"скорость измерена", Event{Kind: EventSpeedChecked, Endpoint: "162.159.192.1:2408", Mbps: 12.34}, []string{"162.159.192.1:2408", "12.3"}},
 		{"форвардер", Event{Kind: EventForwarderUp, Forwarder: "127.0.0.1:51000"}, []string{"127.0.0.1:51000"}},
 		{"страна", Event{Kind: EventPsiphonStarting, Country: "NL"}, []string{"NL", "warp-plus"}},
 		{"готовность", Event{Kind: EventReady, SOCKS: "127.0.0.1:8086", Country: "NL", IP: "203.0.113.9", Org: "AS123 Test", Seconds: 42},
@@ -62,7 +64,7 @@ func TestEventJSONShape(t *testing.T) {
 			t.Errorf("в JSON нет ключа %q: %s", key, data)
 		}
 	}
-	for _, key := range []string{"endpoint", "colo", "region", "reason", "error", "fails", "tun", "mtu", "routes", "dns"} {
+	for _, key := range []string{"endpoint", "colo", "region", "rtt_ms", "mbps", "bytes", "reason", "error", "fails", "tun", "mtu", "routes", "dns"} {
 		if _, ok := got[key]; ok {
 			t.Errorf("пустое поле %q не должно попадать в JSON: %s", key, data)
 		}
@@ -113,6 +115,8 @@ func TestEventNames(t *testing.T) {
 		EventEndpointSelected: "endpoint_selected",
 		EventOuterUp:          "outer_up",
 		EventOuterChecked:     "outer_checked",
+		EventSpeedTesting:     "speed_testing",
+		EventSpeedChecked:     "speed_checked",
 		EventForwarderUp:      "forwarder_up",
 		EventPsiphonStarting:  "psiphon_starting",
 		EventReady:            "ready",

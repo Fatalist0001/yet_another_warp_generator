@@ -87,6 +87,9 @@ type Endpoint struct {
 	Colo string
 	// RTT — задержка, измеренная внутри туннеля.
 	RTT time.Duration
+	// SpeedMbps — скорость, измеренная через итоговый выход при первичной
+	// настройке. 0 — замер не выполнялся или не удался.
+	SpeedMbps float64
 }
 
 // EndpointLocator ищет рабочие endpoint'ы (скан + ранжирование по задержке).
@@ -101,6 +104,10 @@ type ChainRequest struct {
 	Forwarder string
 	// Countries — страны в порядке приоритета (ISO-3166 alpha-2).
 	Countries []string
+	// Bind — адрес SOCKS5 для этой попытки. Пусто — адрес из настроек
+	// chainRunner (обычный запуск). При первичном замере скорости каждому
+	// кандидату даём отдельный порт, чтобы не ждать освобождения общего.
+	Bind string
 }
 
 // ChainSession — живая цепочка с работающим SOCKS5.
@@ -206,6 +213,21 @@ type Config struct {
 	Prober  Prober
 	Clock   Clock
 
+	// ProfilePath — файл кэша выбранных endpoint'ов. Пусто — кэш выключен:
+	// каждый запуск ищет endpoint'ы заново и не измеряет скорость.
+	//
+	// Если файла нет (первый запуск или «Пересоздать конфигурацию»), пайплайн
+	// сканирует endpoint'ы, измеряет скорость через итоговый выход и сохраняет
+	// лучшие. Следующие запуски берут готовый список и не тратят время на скан.
+	ProfilePath string
+	// SpeedTest — замер скорости через SOCKS5. Вызывается при первичной
+	// настройке; nil — стандартный замер по SpeedURL/SpeedBytes/SpeedTimeout.
+	SpeedTest func(ctx context.Context, socks, endpoint string) (SpeedResult, error)
+	// SpeedURL / SpeedBytes / SpeedTimeout — параметры стандартного замера.
+	SpeedURL     string
+	SpeedBytes   int64
+	SpeedTimeout time.Duration
+
 	// TUN — фабрикатор системного туннеля (режим --tun). nil — только SOCKS5.
 	// Вызывается один раз, после первого ready: маршруты применяются только
 	// тогда, когда цепочка уже работает.
@@ -256,6 +278,21 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Clock == nil {
 		c.Clock = realClock{}
+	}
+	if c.SpeedURL == "" {
+		c.SpeedURL = DefaultSpeedURL
+	}
+	if c.SpeedBytes <= 0 {
+		c.SpeedBytes = DefaultSpeedBytes
+	}
+	if c.SpeedTimeout <= 0 {
+		c.SpeedTimeout = DefaultSpeedTimeout
+	}
+	if c.SpeedTest == nil {
+		url, bytes, timeout := c.SpeedURL, c.SpeedBytes, c.SpeedTimeout
+		c.SpeedTest = func(ctx context.Context, socks, endpoint string) (SpeedResult, error) {
+			return SpeedTestThroughSocks(ctx, socks, endpoint, url, bytes, timeout)
+		}
 	}
 	if c.MTU <= 0 {
 		c.MTU = DefaultMTU

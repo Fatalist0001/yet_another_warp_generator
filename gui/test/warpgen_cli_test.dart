@@ -190,6 +190,46 @@ void main() {
       );
     });
 
+    test('передаёт файл кэша endpoint-ов в --endpoint-cache', () async {
+      final runner = FakeProcessRunner();
+      final cli = fakeCli(
+        runner: runner,
+        endpointCache: '/home/tester/.warpgen/endpoints.json',
+      );
+      runner.enqueue();
+
+      await cli.startRun(
+        warpOnly: true,
+        countries: const ['NL'],
+        bind: '127.0.0.1:8086',
+      );
+
+      expect(
+        runner.invocations.single.arguments,
+        containsAllInOrder([
+          '--endpoint-cache',
+          '/home/tester/.warpgen/endpoints.json',
+        ]),
+      );
+    });
+
+    test('clearEndpointCache удаляет сохранённый профиль', () async {
+      final temp = Directory.systemTemp.createTempSync('warpgen-cache-test');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final path = '${temp.path}/endpoints.json';
+      File(path).writeAsStringSync('{}');
+      final cli = fakeCli(
+        runner: FakeProcessRunner(),
+        endpointCache: path,
+      );
+
+      await cli.clearEndpointCache();
+
+      expect(File(path).existsSync(), isFalse);
+      // Повторный вызов не падает, если файла уже нет.
+      await cli.clearEndpointCache();
+    });
+
     test('с Psiphon --cache-dir передаётся и без системного туннеля', () async {
       final runner = FakeProcessRunner();
       final cli = fakeCli(

@@ -32,34 +32,46 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: Listenable.merge([tunnel, account, settings, services]),
-      builder: (context, _) {
-        return SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 760),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _connectionCard(context),
-                    const SizedBox(height: 16),
-                    _dnsCard(context),
-                    const SizedBox(height: 16),
-                    _servicesCard(context),
-                    const SizedBox(height: 16),
-                    _accountCard(context),
-                    const SizedBox(height: 16),
-                    _appCard(context),
-                  ],
+    // Каждая карточка слушает только свои контроллеры: события туннеля не
+    // должны перестраивать DNS, аккаунт и тему (это заметно на прокрутке).
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                AnimatedBuilder(
+                  animation: tunnel,
+                  builder: (context, _) => _connectionCard(context),
                 ),
-              ),
+                const SizedBox(height: 16),
+                AnimatedBuilder(
+                  animation: settings,
+                  builder: (context, _) => _dnsCard(context),
+                ),
+                const SizedBox(height: 16),
+                AnimatedBuilder(
+                  animation: Listenable.merge([settings, services, tunnel]),
+                  builder: (context, _) => _servicesCard(context),
+                ),
+                const SizedBox(height: 16),
+                AnimatedBuilder(
+                  animation: Listenable.merge([account, tunnel]),
+                  builder: (context, _) => _accountCard(context),
+                ),
+                const SizedBox(height: 16),
+                AnimatedBuilder(
+                  animation: settings,
+                  builder: (context, _) => _appCard(context),
+                ),
+              ],
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -486,11 +498,22 @@ class SettingsPage extends StatelessWidget {
     );
     if (confirmed != true) return;
     await account.register(fresh: true);
+    var cacheError = false;
+    if (account.error == null) {
+      try {
+        await deps.cli.clearEndpointCache();
+      } catch (_) {
+        cacheError = true;
+      }
+    }
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          account.error ?? 'Конфигурация пересоздана',
+          account.error ??
+              (cacheError
+                  ? 'Конфигурация пересоздана, но кэш endpoint-ов удалить не удалось'
+                  : 'Конфигурация пересоздана'),
         ),
       ),
     );

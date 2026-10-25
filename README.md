@@ -179,7 +179,10 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
    warp-plus, бинарник warp-plus. Сетевых запросов нет.
 2. **Выбор endpoint** — тот же скан, что у команды `scan`: предфильтр хендшейком,
    trace изнутри туннеля, отсев DME/LED/KJA, сортировка по задержке; берётся до
-   `--endpoints` кандидатов.
+   `--endpoints` кандидатов. С `--endpoint-cache` первый запуск дополнительно
+   измеряет скорость через итоговый выход (в `--warp-only` — сам WARP, с Psiphon —
+   вся цепочка), сортирует кандидатов по ней и сохраняет профиль. Следующие
+   запуски берут готовый профиль: без скана и без повторного замера.
 3. **Внешний туннель** — userspace-туннель в памяти процесса и проверка трафика:
    `warp=on` и узел не из исключённых.
 4. **Форвардер** — UDP-сессия на каждый локальный источник через туннель на
@@ -213,6 +216,10 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
 | `--strict` | `true` | требовать совпадения страны (`--strict=false` — только «не RU») |
 | `--max` | `512` | сколько кандидатов проверять за скан |
 | `--strict-region` | `false` | жёсткий скан: отвергать endpoint'ы с регионом RU |
+| `--endpoint-cache` | пусто | файл профиля endpoint'ов: первый запуск меряет скорость и сохраняет, следующие не сканируют (GUI передаёт `~/.warpgen/endpoints.json`) |
+| `--speed-url` | `https://speed.cloudflare.com/__down?bytes=524288` | файл для замера скорости при первичной настройке профиля |
+| `--speed-bytes` | `524288` | сколько байт скачивать для замера |
+| `--speed-timeout` | `5s` | потолок одного замера скорости |
 | `--monitor-interval` | `60s` | как часто проверять живую цепочку |
 | `--monitor-failures` | `5` | сколько проверок выхода подряд без ответа считать сломанным звеном |
 | `--trace-failures` | `3` | сколько подряд неудач trace через туннель считать мёртвым туннелем |
@@ -230,9 +237,10 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
 | `--json` | `false` | события строками JSON (по одному объекту в строке) |
 | `--debug` | `false` | служебный вывод (в stderr) |
 
-События пайплайна: `endpoint_selected`, `outer_up`, `outer_checked`, `forwarder_up`,
-`socks_up`, `psiphon_starting`, `ready`, `tun_up`, `routes_applied`, `routes_reverted`,
-`dns_selected`, `dns_failed`, `degraded`, `failover`, `stopped`. Секретов (ключей,
+События пайплайна: `endpoint_selected`, `outer_up`, `outer_checked`,
+`speed_testing`, `speed_checked`, `forwarder_up`, `socks_up`, `psiphon_starting`,
+`ready`, `tun_up`, `routes_applied`, `routes_reverted`, `dns_selected`, `dns_failed`,
+`degraded`, `failover`, `stopped`. Секретов (ключей,
 токенов) в них нет; в JSON-режиме подсказки уходят в stderr, чтобы поток stdout
 оставался чистым NDJSON.
 
@@ -459,12 +467,14 @@ make gui-appimage    # переносимый AppImage (нужен ./warp-plus �
 
 Аккаунт WARP создаётся автоматически при первом включении и затем используется
 повторно. Отдельный `.conf` в GUI не создаётся: конфигурация живёт внутри
-программы. Кнопка «Пересоздать конфигурацию» регистрирует новый аккаунт и удаляет
-старую identity warp-plus.
+программы. Кнопка «Пересоздать конфигурацию» регистрирует новый аккаунт, удаляет
+старую identity warp-plus и профиль endpoint'ов, поэтому следующее подключение
+снова выберет их по скорости.
 
 Где что лежит:
 
 - настройки GUI — `~/.warpgen/gui.json` (без приватных ключей);
+- профиль endpoint'ов, выбранных по скорости, — `~/.warpgen/endpoints.json`;
 - identity warp-plus и кэш Psiphon — `~/.warpgen/chain` (как у CLI);
 - аккаунт — рядом с бинарником `warpgen` (или `WARPGEN_ACCOUNT`);
 - бинарник ищется в `WARPGEN_BIN`, затем в `PATH`, затем в текущем каталоге; если
