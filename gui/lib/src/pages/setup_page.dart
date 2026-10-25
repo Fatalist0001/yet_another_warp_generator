@@ -38,7 +38,7 @@ class _SetupPageState extends State<SetupPage> {
   Future<void> _submit() async {
     final path = _controller.text.trim();
     if (path.isEmpty) {
-      setState(() => _error = 'Укажите путь к бинарнику warpgen');
+      setState(() => _error = 'Укажите путь к CLI-бинарнику');
       return;
     }
     setState(() {
@@ -57,7 +57,7 @@ class _SetupPageState extends State<SetupPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('warpgen')),
+      appBar: AppBar(title: const Text('Товарищ майор')),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
@@ -68,7 +68,7 @@ class _SetupPageState extends State<SetupPage> {
               children: [
                 EmptyState(
                   icon: Icons.terminal_rounded,
-                  title: 'Не нашли warpgen',
+                  title: 'Не нашли CLI-бинарник',
                   message: 'GUI запускает тот же CLI, что и терминал. '
                       'Соберите бинарник командой make build в каталоге проекта, '
                       'добавьте его в PATH или укажите путь ниже.',
@@ -86,7 +86,7 @@ class _SetupPageState extends State<SetupPage> {
                         autofocus: true,
                         onSubmitted: (_) => _submit(),
                         decoration: const InputDecoration(
-                          labelText: 'warpgen',
+                          labelText: 'Путь к бинарнику',
                           hintText: '/home/user/warpgen/warpgen',
                         ),
                       ),

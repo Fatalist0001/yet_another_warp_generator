@@ -69,7 +69,19 @@ class ServiceStatus {
   final int rttMs;
   final String error;
 
+  /// Сервис ответил успешно (возможно, медленно).
   bool get isOk => state.isOk;
+
+  /// Сервер вообще ответил. HTTP-ошибка (403/429/5xx) сюда входит: сеть до
+  /// сервиса есть, но он не пустил или сломался. Красным такие не отмечаем.
+  bool get isReachable =>
+      state != ServiceState.timeout && state != ServiceState.networkError;
+
+  /// Сервер ответил HTTP-ошибкой — это предупреждение, а не полная недоступность.
+  bool get isHttpError => state == ServiceState.httpError;
+
+  /// Совсем недоступен: нет ответа (таймаут или сетевая ошибка).
+  bool get isUnavailable => !isReachable;
 }
 
 /// Отчёт целиком.

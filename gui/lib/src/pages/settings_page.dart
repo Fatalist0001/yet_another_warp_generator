@@ -422,7 +422,7 @@ class SettingsPage extends StatelessWidget {
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.terminal),
-            title: const Text('Бинарник warpgen'),
+            title: const Text('CLI-бинарник'),
             subtitle: Text(
               deps.cli.binaryPath,
               style: theme.textTheme.bodySmall?.copyWith(
@@ -524,7 +524,7 @@ class SettingsPage extends StatelessWidget {
     final path = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Бинарник warpgen'),
+        title: const Text('CLI-бинарник'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -539,7 +539,7 @@ class SettingsPage extends StatelessWidget {
               controller: controller,
               autofocus: true,
               decoration: const InputDecoration(
-                labelText: 'Путь к warpgen',
+                labelText: 'Путь к CLI-бинарнику',
                 hintText: '/home/user/warpgen/warpgen',
               ),
             ),

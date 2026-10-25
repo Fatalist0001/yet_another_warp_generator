@@ -571,7 +571,7 @@ class TunnelController extends ChangeNotifier {
       _fail(_rootFailure(code));
       return;
     }
-    _fail(_lastError ?? 'warpgen завершился с кодом $code');
+    _fail(_lastError ?? 'CLI завершился с кодом $code');
   }
 
   /// Объясняет отказ `pkexec` так, чтобы причину было видно в интерфейсе.

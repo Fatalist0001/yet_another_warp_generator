@@ -68,7 +68,8 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Не нашли warpgen'), findsOneWidget);
+    expect(find.text('Товарищ майор'), findsOneWidget);
+    expect(find.text('Не нашли CLI-бинарник'), findsOneWidget);
     expect(find.text('Найти и запустить'), findsOneWidget);
   });
 
@@ -85,6 +86,7 @@ void main() {
       ),
     );
 
+    expect(find.text('Товарищ майор'), findsOneWidget);
     expect(find.byType(TabBar), findsOneWidget);
     expect(find.text('Подключение'), findsOneWidget);
     expect(find.text('Настройки'), findsOneWidget);

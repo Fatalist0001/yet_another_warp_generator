@@ -223,7 +223,7 @@ class WarpgenCli {
           .prepare();
     } on FileSystemException catch (error) {
       throw WarpgenException(
-        'не удалось подготовить копию warpgen для root: ${error.message}',
+        'не удалось подготовить копию CLI для root: ${error.message}',
       );
     }
   }

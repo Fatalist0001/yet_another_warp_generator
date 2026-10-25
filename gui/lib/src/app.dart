@@ -65,7 +65,7 @@ class _WarpgenAppState extends State<WarpgenApp> {
   Widget build(BuildContext context) {
     final environment = widget.environment ?? Platform.environment;
     return MaterialApp(
-      title: 'warpgen',
+      title: 'Товарищ майор',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
@@ -302,7 +302,7 @@ class _Shell extends StatelessWidget {
             children: [
               Icon(Icons.shield_moon_outlined, color: scheme.primary, size: 22),
               const SizedBox(width: 8),
-              const Text('warpgen'),
+              const Text('Товарищ майор'),
             ],
           ),
         ),

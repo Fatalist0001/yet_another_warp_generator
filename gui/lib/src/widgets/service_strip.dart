@@ -104,42 +104,68 @@ class _ServiceChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final good = status.isOk;
-    final background = good
-        ? scheme.secondaryContainer
-        : scheme.errorContainer.withValues(alpha: 0.55);
-    final foreground =
-        good ? scheme.onSecondaryContainer : scheme.onErrorContainer;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            good ? Icons.check_circle_outline : Icons.cancel_outlined,
-            size: 15,
-            color: foreground,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            status.label,
-            style: theme.textTheme.labelMedium?.copyWith(color: foreground),
-          ),
-          if (status.rttMs > 0) ...[
+    // Красный — только когда сервис совсем не ответил. HTTP-ошибка (403, 429,
+    // 5xx) означает, что сеть до сервера есть: показываем предупреждение.
+    final unavailable = status.isUnavailable;
+    final warning = status.isHttpError;
+    final background = unavailable
+        ? scheme.errorContainer.withValues(alpha: 0.55)
+        : warning
+            ? scheme.tertiaryContainer.withValues(alpha: 0.7)
+            : scheme.secondaryContainer;
+    final foreground = unavailable
+        ? scheme.onErrorContainer
+        : warning
+            ? scheme.onTertiaryContainer
+            : scheme.onSecondaryContainer;
+    final icon = unavailable
+        ? Icons.cancel_outlined
+        : warning
+            ? Icons.warning_amber_rounded
+            : Icons.check_circle_outline;
+    return Tooltip(
+      message: _hint(status),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: foreground),
             const SizedBox(width: 6),
             Text(
-              '${status.rttMs} мс',
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: foreground.withValues(alpha: 0.75),
-              ),
+              status.label,
+              style: theme.textTheme.labelMedium?.copyWith(color: foreground),
             ),
+            if (status.rttMs > 0) ...[
+              const SizedBox(width: 6),
+              Text(
+                '${status.rttMs} мс',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: foreground.withValues(alpha: 0.75),
+                ),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
+  }
+
+  String _hint(ServiceStatus status) {
+    return switch (status.state) {
+      ServiceState.ok => 'Доступен',
+      ServiceState.slow => 'Доступен, но медленно',
+      ServiceState.httpError => status.code > 0
+          ? 'HTTP ${status.code}: сервер ответил ошибкой'
+          : 'Сервер ответил ошибкой',
+      ServiceState.timeout => 'Нет ответа: таймаут',
+      ServiceState.networkError => status.error.isNotEmpty
+          ? 'Сетевая ошибка: ${status.error}'
+          : 'Сетевая ошибка',
+    };
   }
 }
