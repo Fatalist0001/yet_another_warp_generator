@@ -207,6 +207,28 @@ void main() {
     );
   });
 
+  test('tun_up после ready не сбрасывает «Подключено» на Android', () async {
+    final runner = FakeProcessRunner();
+    final tunnel = TunnelController(cli: fakeCli(runner: runner));
+    tunnel.setTun(true);
+    final process = runner.enqueue();
+
+    await tunnel.start();
+    process
+      ..emitEvent(const {
+        'event': 'ready',
+        'socks': '127.0.0.1:8086',
+        'ip': '203.0.113.9',
+      })
+      ..emitEvent(const {'event': 'tun_up', 'tun': 'tun1', 'mtu': 1400})
+      ..emitEvent(const {'event': 'dns_selected', 'dns': '198.18.0.2'});
+    await flushEvents();
+
+    expect(tunnel.status, TunnelStatus.live);
+    expect(tunnel.headline, 'Подключено');
+    expect(tunnel.detail, contains('весь трафик машины'));
+  });
+
   test('событие stopped с ошибкой и код 1 дают состояние failed', () async {
     final runner = FakeProcessRunner();
     final tunnel = TunnelController(cli: fakeCli(runner: runner));

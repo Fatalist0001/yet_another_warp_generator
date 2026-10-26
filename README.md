@@ -377,7 +377,7 @@ DNS: перехватываются UDP и TCP на 53-й порт к любом
 | Платформа | Устройство пакетов | Маршруты и DNS | Права |
 |---|---|---|---|
 | Linux (сделано) | `vpn/tun_linux.go`: `tun.CreateTUN`, `tun.CreateTUNFromFile` | `vpn/routes_linux.go`: команды `ip` и `resolvectl` | root, проверка до старта |
-| Android (сделано в APK) | `vpn.DeviceFromFile` (fd отдаёт `VpnService.Builder`) → `vpn.Options.Device` | `vpn/routes_android.go`: заглушка, адрес/маршруты/DNS задаёт VpnService; приложение исключено из VPN через `addDisallowedApplication` | проверки нет: `vpn.Options.CheckPrivileges` подменяется на пустую |
+| Android (сделано в APK) | `vpn.DeviceFromFile` (fd отдаёт `VpnService.Builder`) → `tun.CreateUnmonitoredTUNFromFD` → `vpn.Options.Device`; без `SIOCSIFMTU`/netlink, MTU задаёт VpnService | `vpn/routes_android.go`: заглушка, адрес/маршруты/DNS задаёт VpnService; приложение исключено из VPN через `addDisallowedApplication` | проверки нет: `vpn.Options.CheckPrivileges` подменяется на пустую |
 | Windows | Wintun (`vpn/tun_windows.go`) | `vpn/routes_windows.go`: `netsh interface ipv4 add route` / `CreateIpForwardEntry`; исключение endpoint — маршрутом `/32` | администратор |
 | macOS | utun (`vpn/tun_darwin.go`) | `vpn/routes_darwin.go`: `route add` и `networksetup -setdnsservers` | root |
 

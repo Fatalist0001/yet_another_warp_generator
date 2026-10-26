@@ -12,7 +12,7 @@ import (
 // библиотеки, что и tunnel/) и устройство из готового дескриптора.
 //
 // Точки адаптации: Android — TunDevice из fd, который отдал VpnService.Builder
-// (CreateTUNFromFile); Windows — Wintun; macOS — utun.
+// (CreateUnmonitoredTUNFromFD); Windows — Wintun; macOS — utun.
 type Device interface {
 	// Read читает один пакет в p и возвращает его длину. После Close — ошибка.
 	Read(p []byte) (int, error)

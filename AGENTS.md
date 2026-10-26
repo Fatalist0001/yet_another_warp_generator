@@ -225,8 +225,10 @@ GOPROXY=off go test ./... -short
   `core/fakes_test.go`), `vpn.Device`, `vpn.RouteManager`, `vpn.Executor`.
   `os/exec` живёт только в `vpn/routes_linux.go`; в остальном коде `vpn` никаких
   команд и syscall'ов быть не должно.
-- TUN создаётся только через пакет `tun` из `amneziawg-go` (`CreateTUN`,
-  `CreateTUNFromFile`) — никаких ручных ioctl.
+- TUN создаётся только через пакет `tun` из `amneziawg-go`: `CreateTUN` для root
+  и `CreateUnmonitoredTUNFromFD` для готового fd от Android VpnService. Второй
+  вариант не делает `SIOCSIFMTU`/netlink — у Android-приложения нет
+  `CAP_NET_ADMIN`, а MTU уже задан `VpnService.Builder`. Ручных ioctl нет.
 - Маршруты применяются **только после** `ready`, иначе мост работает без прокси.
   Порядок запуска: цепочка → TUN и мост → маршруты → DNS; остановка — в обратном
   порядке, и всегда снимает маршруты (откат не зависит от отмены `ctx`).

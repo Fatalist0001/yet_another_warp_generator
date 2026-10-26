@@ -507,11 +507,16 @@ class TunnelController extends ChangeNotifier {
         break;
       case 'tun_up':
         // Системный туннель поднялся; маршруты применяются после ready.
-        _setStatus(
-          TunnelStatus.starting,
-          'Системный туннель поднят',
-          '${event.tun ?? 'TUN'}: настраиваем маршруты и DNS',
-        );
+        // На Android маршруты задаёт VpnService, поэтому routes_applied с
+        // нулевым числом команд не приходит — не сбрасываем уже достигнутое
+        // «Подключено» обратно в «настраиваем».
+        if (_status != TunnelStatus.live) {
+          _setStatus(
+            TunnelStatus.starting,
+            'Системный туннель поднят',
+            '${event.tun ?? 'TUN'}: настраиваем маршруты и DNS',
+          );
+        }
         break;
       case 'routes_applied':
         _setStatus(TunnelStatus.live, 'Подключено', _liveDetail());
