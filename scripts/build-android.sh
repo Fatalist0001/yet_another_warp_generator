@@ -80,12 +80,11 @@ exit 1
 EOF
 	chmod +x "$NDK_DIR/ndk-build"
 fi
-[ -f "$ROOT/gui/android/local.properties" ] || {
-	cat >"$ROOT/gui/android/local.properties" <<EOF
+FLUTTER_SDK="$(cd "$(dirname "$(readlink -f "$FLUTTER")")/.." && pwd)"
+cat >"$ROOT/gui/android/local.properties" <<EOF
 sdk.dir=$SDK
-flutter.sdk=$ROOT/.toolchain/flutter
+flutter.sdk=$FLUTTER_SDK
 EOF
-}
 
 echo "== 1. Go-ядро для android/arm64"
 GOTMPDIR="$TMPDIR" GOOS=android GOARCH=arm64 CGO_ENABLED=0 GOPROXY=off \

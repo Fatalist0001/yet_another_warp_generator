@@ -30,11 +30,11 @@ func resolveDNSHostAndroid(host string) (string, error) {
 		systemErr = err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	var lastErr error
-	for _, server := range []string{"1.1.1.1:53", "8.8.8.8:53"} {
+	for _, server := range []string{"1.1.1.1:53", "8.8.8.8:53", "77.88.8.8:53", "9.9.9.9:53"} {
 		resolver := &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
