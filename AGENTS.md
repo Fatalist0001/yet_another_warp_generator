@@ -138,6 +138,10 @@ GOPROXY=off go test ./... -short
   (`adb install -r`), в `make checks` не входят; эмулятор не нужен.
 - Android-код не должен протекать в Linux: `WarpgenCli.startRun` выбирает ветку
   по `Platform.isAndroid`, `AndroidProcessRunner` — только для `run --tun`.
+- Потоки чтения stdout/stderr в `WarpgenVpnService` обязаны глотать
+  `IOException`: при отключении `stopVpn()` закрывает поток из другого потока,
+  и необработанный `InterruptedIOException` роняет всё приложение (проверено
+  на Honor/Huawei).
 - Go-резолвер на Android (netgo, CGO выключен) читает `/etc/resolv.conf` с `::1`
   и не видит системный DNS. Поэтому `cli/dns_resolve_android.go` подменяет
   `net.DefaultResolver` на публичные `1.1.1.1`/`8.8.8.8`/`9.9.9.9`; без этого

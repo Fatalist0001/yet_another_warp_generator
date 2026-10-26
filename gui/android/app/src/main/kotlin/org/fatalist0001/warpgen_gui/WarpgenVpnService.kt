@@ -187,11 +187,18 @@ class WarpgenVpnService : VpnService() {
     }
 
     private fun pump(stream: java.io.InputStream, type: String) {
-        stream.bufferedReader().useLines { lines ->
-            lines.forEach { line ->
-                Log.d(TAG, "$type: $line")
-                emit(mapOf("type" to type, "line" to line))
+        try {
+            stream.bufferedReader().useLines { lines ->
+                lines.forEach { line ->
+                    Log.d(TAG, "$type: $line")
+                    emit(mapOf("type" to type, "line" to line))
+                }
             }
+        } catch (error: java.io.IOException) {
+            // stopVpn() закрывает поток дочернего процесса из другого потока:
+            // readLine() получает InterruptedIOException. Это штатная
+            // остановка, а не сбой — иначе Android убивает всё приложение.
+            Log.d(TAG, "$type: поток закрыт при остановке: ${error.message}")
         }
     }
 
