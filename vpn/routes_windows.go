@@ -141,7 +141,7 @@ func (w *windowsRoutes) apply(ctx context.Context, rec *record, plan Plan) error
 
 	// Адрес может остаться от прошлого запуска (адаптер Wintun переиспользуется):
 	// снимаем его молча, чтобы New-NetIPAddress не падал на дубликате.
-	if err := rec.do(ctx, psCmd(fmt.Sprintf(
+	if err := rec.do(ctx, psCleanup(fmt.Sprintf(
 		"Remove-NetIPAddress -InterfaceAlias %s -AddressFamily IPv4 -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null", tun)), nil); err != nil {
 		return err
 	}
@@ -162,13 +162,13 @@ func (w *windowsRoutes) apply(ctx context.Context, rec *record, plan Plan) error
 	// туннеля. Необязательный шаг: если IPv6 на адаптере выключен, остаёмся
 	// с предупреждением, но IPv4-туннель работает.
 	ipv6Ready := true
-	if err := rec.do(ctx, psCmd(fmt.Sprintf(
+	if err := rec.do(ctx, psCleanup(fmt.Sprintf(
 		"Remove-NetIPAddress -InterfaceAlias %s -AddressFamily IPv6 -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null",
 		tun)), nil); err != nil {
 		ipv6Ready = false
 	} else if err := rec.do(ctx, psCmd(fmt.Sprintf(
 		"New-NetIPAddress -InterfaceAlias %s -IPAddress %s -PrefixLength 64 -AddressFamily IPv6 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null",
-		tun, psQuote(tunIPv6Addr))), psCmd(fmt.Sprintf(
+		tun, psQuote(tunIPv6Addr))), psCleanup(fmt.Sprintf(
 		"Remove-NetIPAddress -InterfaceAlias %s -IPAddress %s -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null",
 		tun, psQuote(tunIPv6Addr)))); err != nil {
 		ipv6Ready = false
@@ -196,10 +196,10 @@ func (w *windowsRoutes) apply(ctx context.Context, rec *record, plan Plan) error
 	// существующий default, не удаляя его.
 	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
 		argv := psCmd(fmt.Sprintf(
-			"Remove-NetRoute -DestinationPrefix %s -InterfaceIndex %d -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; "+
+			"Remove-NetRoute -DestinationPrefix %s -InterfaceIndex %d -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; "+
 				"New-NetRoute -DestinationPrefix %s -InterfaceIndex %d -NextHop '0.0.0.0' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null",
 			psQuote(prefix), index, psQuote(prefix), index))
-		inverse := psCmd(fmt.Sprintf(
+		inverse := psCleanup(fmt.Sprintf(
 			"Remove-NetRoute -DestinationPrefix %s -InterfaceIndex %d -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null",
 			psQuote(prefix), index))
 		if err := rec.do(ctx, argv, inverse); err != nil {
@@ -212,7 +212,7 @@ func (w *windowsRoutes) apply(ctx context.Context, rec *record, plan Plan) error
 	if ipv6Ready {
 		ipv6 := psCmd(fmt.Sprintf(
 			"New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex %d -NextHop '::' -RouteMetric 1 -PolicyStore ActiveStore -AddressFamily IPv6 -ErrorAction Stop | Out-Null", index))
-		ipv6Inverse := psCmd(fmt.Sprintf(
+		ipv6Inverse := psCleanup(fmt.Sprintf(
 			"Remove-NetRoute -DestinationPrefix '::/0' -InterfaceIndex %d -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null", index))
 		if err := rec.do(ctx, ipv6, ipv6Inverse); err != nil {
 			msg := "IPv6 не перенаправлен в TUN: возможна утечка IPv6 — " + err.Error()
@@ -248,7 +248,7 @@ func (w *windowsRoutes) addEndpoint(ctx context.Context, rec *record, ip netip.A
 	argv := psCmd(fmt.Sprintf(
 		"New-NetRoute -DestinationPrefix %s -InterfaceIndex %d -NextHop %s -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null",
 		psQuote(prefix), w.phys.InterfaceIndex, psQuote(w.nexthop())))
-	inverse := psCmd(fmt.Sprintf(
+	inverse := psCleanup(fmt.Sprintf(
 		"Remove-NetRoute -DestinationPrefix %s -InterfaceIndex %d -NextHop %s -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null",
 		psQuote(prefix), w.phys.InterfaceIndex, psQuote(w.nexthop())))
 	return rec.do(ctx, argv, inverse)
@@ -257,7 +257,8 @@ func (w *windowsRoutes) addEndpoint(ctx context.Context, rec *record, ip netip.A
 // removeEndpoint снимает маршрут /32 прежнего endpoint; отмена возвращает его.
 func (w *windowsRoutes) removeEndpoint(ctx context.Context, rec *record, ip netip.Addr) error {
 	prefix := ip.String() + "/32"
-	argv := psCmd(fmt.Sprintf(
+
+	argv := psCleanup(fmt.Sprintf(
 		"Remove-NetRoute -DestinationPrefix %s -InterfaceIndex %d -NextHop %s -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null",
 		psQuote(prefix), w.phys.InterfaceIndex, psQuote(w.nexthop())))
 	inverse := psCmd(fmt.Sprintf(
@@ -320,7 +321,7 @@ func (w *windowsRoutes) applyDNS(ctx context.Context, rec *record, plan Plan) er
 	argv := psCmd(fmt.Sprintf(
 		"Set-DnsClientServerAddress -InterfaceAlias %s -ServerAddresses %s -ErrorAction Stop",
 		psQuote(plan.TUNName), psQuote(plan.DNS.String())))
-	inverse := psCmd(fmt.Sprintf(
+	inverse := psCleanup(fmt.Sprintf(
 		"Set-DnsClientServerAddress -InterfaceAlias %s -ResetServerAddresses -ErrorAction SilentlyContinue",
 		psQuote(plan.TUNName)))
 	if err := rec.do(ctx, argv, inverse); err != nil {
@@ -372,7 +373,7 @@ func parsePSDNS(out string) ([]psDNS, error) {
 // настройку, если их не было.
 func restoreDNS(iface psDNS) string {
 	if len(iface.ServerAddresses) == 0 {
-		return fmt.Sprintf("Set-DnsClientServerAddress -InterfaceIndex %d -ResetServerAddresses -ErrorAction SilentlyContinue", iface.InterfaceIndex)
+		return fmt.Sprintf("Set-DnsClientServerAddress -InterfaceIndex %d -ResetServerAddresses -ErrorAction SilentlyContinue; exit 0", iface.InterfaceIndex)
 	}
 	quoted := make([]string, len(iface.ServerAddresses))
 	for i, s := range iface.ServerAddresses {
@@ -480,6 +481,19 @@ func psQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+// psCleanup — best-effort команда: отсутствие объектов не ошибка.
+//
+// PowerShell возвращает exit 1 на ЛЮБУЮ ошибку командлета, даже подавленную
+// `-ErrorAction SilentlyContinue` и скрытую `| Out-Null` («No matching
+// MSFT_… objects found» — обычное дело для очистки на чистой системе или при
+// повторе). Поэтому такие скрипты явно заканчиваются `exit 0`: иначе
+// повторный запуск падает на первом же шаге очистки. Команды с
+// `-ErrorAction Stop` (создание адресов и маршрутов) выход не получают —
+// реальные ошибки по-прежнему валят туннель.
+func psCleanup(script string) []string {
+	return psCmd(script + "; exit 0")
+}
+
 const defaultRouteScript = `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false);
 $r = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
   Sort-Object -Property RouteMetric, InterfaceMetric | Select-Object -First 1
@@ -495,7 +509,7 @@ $cfg = Get-DnsClientServerAddress -InterfaceIndex $r.InterfaceIndex -AddressFami
 foreach ($s in $cfg.ServerAddresses) { if ($s) { $servers += $s } }
 [pscustomobject]@{ Interface = $r.InterfaceAlias; Servers = $servers } | ConvertTo-Json -Compress`
 
-const clearDNSCacheScript = `Clear-DnsClientCache -ErrorAction SilentlyContinue`
+const clearDNSCacheScript = `Clear-DnsClientCache -ErrorAction SilentlyContinue; exit 0`
 
 // osExecutor выполняет команды через os/exec. Группу процессов на Windows не
 // заводим: SIGINT дочернему процессу всё равно не доставить, остановкой

@@ -129,6 +129,26 @@ func TestWindowsApplyCommands(t *testing.T) {
 	if _, err := os.Stat(state); err != nil {
 		t.Fatalf("нет файла состояния: %v", err)
 	}
+
+	assertCleanupExitsZero(t, exec)
+}
+
+// assertCleanupExitsZero ловит граблю PowerShell: на любой «объект не найден»
+// он возвращает exit 1 даже под `-ErrorAction SilentlyContinue | Out-Null`,
+// из-за чего повторный запуск падал на первом же шаге очистки. Поэтому
+// best-effort-команды обязаны заканчиваться `; exit 0`, а смешанные скрипты —
+// содержать хотя бы один `-ErrorAction Stop` (там выход честный).
+func assertCleanupExitsZero(t *testing.T, exec *fakeWinExecutor) {
+	t.Helper()
+	for _, argv := range exec.executed() {
+		cmd := strings.Join(argv, " ")
+		if !strings.Contains(cmd, "SilentlyContinue") || strings.Contains(cmd, "-ErrorAction Stop") {
+			continue
+		}
+		if !strings.HasSuffix(strings.TrimSpace(cmd), "; exit 0") {
+			t.Errorf("best-effort-команда без `; exit 0` (PowerShell вернёт 1 на пустой системе): %s", cmd)
+		}
+	}
 }
 
 // Revert возвращает DNS физических интерфейсов и снимает маршруты; журнал
@@ -166,6 +186,7 @@ func TestWindowsRevertRestoresDNS(t *testing.T) {
 			t.Errorf("нет отмены %q\n---\n%s", want, out)
 		}
 	}
+	assertCleanupExitsZero(t, exec)
 	if _, err := os.Stat(filepath.Join(dir, "warpgen0.st")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("журнал не удалён после отката: %v", err)
 	}
