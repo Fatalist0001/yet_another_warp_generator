@@ -1,6 +1,8 @@
 /// Настройки: DNS, сервисы, аккаунт и приложение.
 library;
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../app.dart';
@@ -509,9 +511,11 @@ class SettingsPage extends StatelessWidget {
             TextField(
               controller: controller,
               autofocus: true,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Путь к CLI-бинарнику',
-                hintText: '/home/user/warpgen/warpgen',
+                hintText: Platform.isWindows
+                    ? r'C:\warpgen\warpgen.exe'
+                    : '/home/user/warpgen/warpgen',
               ),
             ),
           ],

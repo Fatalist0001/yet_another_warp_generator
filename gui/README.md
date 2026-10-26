@@ -1,7 +1,8 @@
-# warpgen GUI (Flutter, Linux)
+# warpgen GUI (Flutter, Linux и Windows)
 
 Окно в стиле Material You (Material 3) к локальному CLI `warpgen`: туннель,
-скан endpoint'ов и аккаунт WARP.
+скан endpoint'ов и аккаунт WARP. Один Dart-код на Linux и Windows; отличаются
+только runner'ы и способ мягкой остановки CLI.
 
 Приложение не вшивает ядро в себя: оно запускает тот же бинарник `warpgen` и читает
 его машинный вывод (`run --json`, `scan --json`). Свой сетевой логики в Dart нет —
@@ -16,10 +17,14 @@ make gui-run      # окно приложения
 make gui-test     # все тесты, включая live-e2e (сеть + настоящий ./warpgen)
 make gui-analyze  # flutter analyze
 make gui-appimage # переносимый AppImage (нужен ./warp-plus в корне)
+
+# Windows (только на Windows): портативный zip без установщика
+make windows
 ```
 
 Нужны Flutter SDK (desktop Linux) и GTK3 dev-пакеты (`libgtk-3-dev`,
-`ninja-build`, `clang`, `cmake`, `pkg-config`).
+`ninja-build`, `clang`, `cmake`, `pkg-config`), а для Windows — Flutter SDK с
+Windows-поддержкой и Visual Studio Build Tools с C++.
 
 Релизная сборка: `gui/build/linux/x64/release/bundle/warpgen_gui` (~24 МБ вместе с
 `lib/` и `data/`). В `linux/CMakeLists.txt` добавлена проверка `if(EXISTS …)` вокруг
@@ -62,7 +67,7 @@ TUN через `warpgen run --tun`. Это режим kill switch: весь тр
 будет подсказка с причиной.
 
 Остановка root-процесса сигналом невозможна (чужой uid), поэтому GUI создаёт файл
-`~/.warpgen/run/tun.stop`, а CLI с `--stop-file` замечает его и завершает пайплайн
+`~/.warpgen/run/stop`, а CLI с `--stop-file` замечает его и завершает пайплайн
 сам — с откатом маршрутов.
 
 Если другой VPN уже активен, системный туннель не запускайте — маршруты конфликтуют.
@@ -84,6 +89,40 @@ AppImage смонтирован только для чтения, поэтому
 
 Бинарник ищется в `WARPGEN_BIN`, затем в `PATH`, затем в текущем каталоге; если
 не найден, GUI просит путь и больше ничего не делает.
+
+## Windows (портативная сборка)
+
+`make windows` (`scripts/build-windows.sh`) собирает Go-ядро под windows/amd64,
+кладёт `warpgen.exe`, `warp-plus.exe` и `wintun.dll` рядом с Flutter-приложением
+и упаковывает `gui/build/windows/x64/runner/Release` в
+`warpgen-<версия>-windows-x64.zip`. Установщика нет: папку можно распаковать
+куда угодно и запустить `warpgen_gui.exe`; реестр не трогается. `wintun.dll`
+скачивается при сборке и в git не лежит.
+
+`flutter run -d windows` требует терминала от администратора: готовый exe
+запускается с манифестом `requireAdministrator`, а обычный `CreateProcess`
+повышенный процесс не стартует. `make windows` собирает без прав — они нужны
+только при запуске.
+
+Системный туннель работает как на Linux: переключатель «Системный туннель»
+(на первом запуске включён) создаёт Wintun-адаптер `warpgen0`, ведёт весь
+IPv4-трафик через цепочку, перенастраивает DNS и отбрасывает IPv6. Для этого GUI
+запускается с манифестом `requireAdministrator` — Windows покажет UAC при старте,
+а дочерний `warpgen.exe` унаследует права. Выключенный переключатель оставляет
+локальный SOCKS5 (`127.0.0.1:8086`).
+
+Все данные портативные — в `warpgen-data` рядом с `warpgen_gui.exe`: `gui.json`,
+аккаунт, `endpoints.json`, `chain/`, `state/`, файл остановки. Если каталог
+только для чтения, GUI откатывается в `%USERPROFILE%\.warpgen`.
+
+Отличия от Linux-версии:
+
+- мягкая остановка — файлом-сигналом `--stop-file`: `dart:io` на Windows не умеет
+  доставлять SIGINT дочернему процессу, `Process.kill` сразу убивает CLI;
+- CLI ищется как `warpgen.exe` в `WARPGEN_BIN`, `PATH` (разделитель `;`), рядом с
+  `warpgen_gui.exe` и в текущем каталоге;
+- домашний каталог — `USERPROFILE`; «DNS провайдера» и пресеты DNS работают
+  через CLI (`dns-current` реализован и на Windows).
 
 ## Устройство
 

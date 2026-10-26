@@ -329,10 +329,12 @@ sudo ./warpgen run --tun --dry-run              # только напечата�
 curl https://ifconfig.co/json                   # уже без --proxy: трафик идёт через туннель
 ```
 
-**Нужен root:** создаётся TUN-интерфейс (`/dev/net/tun`) и меняются маршруты. Без
-прав команда сразу выходит с подсказкой и ничего не делает; `--dry-run` работает без
-root и **не** создаёт TUN и не трогает маршруты — он только читает текущий маршрут по
-умолчанию (чтобы напечатать реальные команды) и печатает их.
+**Нужен root (на Windows — права администратора):** создаётся TUN-интерфейс
+(`/dev/net/tun` на Linux, Wintun-адаптер на Windows) и меняются маршруты. Без прав
+команда сразу выходит с подсказкой и ничего не делает; `--dry-run` работает без root и
+**не** создаёт TUN и не трогает маршруты — он только читает текущий маршрут по
+умолчанию (чтобы напечатать реальные команды) и печатает их. На Windows `wintun.dll`
+должна лежать рядом с `warpgen.exe` (её кладёт сборка).
 
 Порядок запуска: цепочка готова (`ready`) → TUN и мост → маршруты → выбор DNS.
 Остановка — в обратном порядке: маршруты и DNS, затем TUN и мост, затем цепочка.
@@ -372,13 +374,13 @@ DNS: перехватываются UDP и TCP на 53-й порт к любом
 При failover цепочки TUN и маршруты **не снимаются**: новые соединения на секунды
 падают, но трафик не уходит напрямую — это и есть kill switch.
 
-#### Точки адаптации (не реализованы, только контракт)
+#### Платформы системного туннеля
 
 | Платформа | Устройство пакетов | Маршруты и DNS | Права |
 |---|---|---|---|
 | Linux (сделано) | `vpn/tun_linux.go`: `tun.CreateTUN`, `tun.CreateTUNFromFile` | `vpn/routes_linux.go`: команды `ip` и `resolvectl` | root, проверка до старта |
 | Android (сделано в APK) | `vpn.DeviceFromFile` (fd отдаёт `VpnService.Builder`) → `tun.CreateUnmonitoredTUNFromFD` → `vpn.Options.Device`; без `SIOCSIFMTU`/netlink, MTU задаёт VpnService | `vpn/routes_android.go`: заглушка, адрес/маршруты/DNS задаёт VpnService; приложение исключено из VPN через `addDisallowedApplication` | проверки нет: `vpn.Options.CheckPrivileges` подменяется на пустую |
-| Windows | Wintun (`vpn/tun_windows.go`) | `vpn/routes_windows.go`: `netsh interface ipv4 add route` / `CreateIpForwardEntry`; исключение endpoint — маршрутом `/32` | администратор |
+| Windows (сделано) | `vpn/tun_windows.go`: Wintun через `amneziawg-go/tun`; `wintun.dll` лежит рядом с `warpgen.exe` | `vpn/routes_windows.go`: PowerShell (`Get-NetRoute`, `New-NetIPAddress`, `New-NetRoute`, `Set-DnsClientServerAddress`), исключение endpoint — маршрутом `/32`; IPv6 уводится в TUN и отбрасывается | администратор (UAC) |
 | macOS | utun (`vpn/tun_darwin.go`) | `vpn/routes_darwin.go`: `route add` и `networksetup -setdnsservers` | root |
 
 Общий контракт один: `vpn.Device` (чтение/запись IP-пакетов, имя, MTU, Close),
@@ -387,7 +389,7 @@ DNS: перехватываются UDP и TCP на 53-й порт к любом
 `Device` (готовое устройство из fd) и `Protect(fd)` — на Linux он не нужен (петля
 исключена маршрутом `/32`), а на Android приложение целиком исключается из VPN
 через `addDisallowedApplication`, поэтому `protect` для сокетов Go-процесса тоже
-не нужен. Реализованы Linux и Android (APK); остальные ОС возвращают
+не нужен. Реализованы Linux, Windows и Android (APK); остальные ОС возвращают
 `vpn.ErrUnsupported` с понятным сообщением.
 
 ### Чек-лист e2e (позже, на свободной машине)
@@ -444,13 +446,14 @@ WARPGEN_INTEGRATION=1 go test -tags integration ./cli/ -run Integration -v
 WARPGEN_INTEGRATION=1 WARPGEN_CHAIN=1 go test -tags integration ./cli/ -run IntegrationChain -v
 ```
 
-## GUI для Linux (Flutter, Material You)
+## GUI для Linux и Windows (Flutter, Material You)
 
 `gui/` — тонкая обёртка над CLI: минималистичное окно Material You (Material 3,
 `ColorScheme.fromSeed`) с двумя горизонтальными вкладками. Ядро **не** вшито в
 приложение: GUI запускает тот же бинарник `warpgen` и читает его машинный вывод
-(`run --json`, `dns-presets --json`, `services --json`). Поэтому туннель остаётся
-userspace, root не нужен, а поведение такое же, как в терминале.
+(`run --json`, `dns-presets --json`, `services --json`). Поведение такое же, как в
+терминале: без `--tun` туннель остаётся userspace и root не нужен; системный
+туннель требует root (Linux) или прав администратора (Windows).
 
 ```bash
 make build           # GUI запускает готовый бинарник
@@ -465,7 +468,7 @@ make gui-appimage    # переносимый AppImage (нужен ./warp-plus �
 
 | Вкладка | Что делает |
 |---|---|
-| Подключение | одна кнопка «Подключиться», режим WARP или WARP + Psiphon с подсказкой, переключатель системного туннеля (Linux), терминальный блок состояния и проверка сервисов |
+| Подключение | одна кнопка «Подключиться», режим WARP или WARP + Psiphon с подсказкой, переключатель системного туннеля (Linux и Windows; на Android включён всегда), терминальный блок состояния и проверка сервисов |
 | Настройки | DNS (рекомендуемые Comss/Malw/GeoHide, провайдер автоматически, свой), страны Psiphon, локальный порт, автопроверка сервисов, аккаунт и «Пересоздать конфигурацию», тема, путь к бинарнику |
 
 Аккаунт WARP создаётся автоматически при первом включении и затем используется
@@ -476,10 +479,14 @@ make gui-appimage    # переносимый AppImage (нужен ./warp-plus �
 
 Где что лежит:
 
-- настройки GUI — `~/.warpgen/gui.json` (без приватных ключей);
-- профиль endpoint'ов, выбранных по скорости, — `~/.warpgen/endpoints.json`;
-- identity warp-plus и кэш Psiphon — `~/.warpgen/chain` (как у CLI);
-- аккаунт — рядом с бинарником `warpgen` (или `WARPGEN_ACCOUNT`);
+- настройки GUI — `~/.warpgen/gui.json` (без приватных ключей); на Windows —
+  `warpgen-data\gui.json` рядом с `warpgen_gui.exe`;
+- профиль endpoint'ов, выбранных по скорости, — `~/.warpgen/endpoints.json`
+  (Windows — `warpgen-data\endpoints.json`);
+- identity warp-plus и кэш Psiphon — `~/.warpgen/chain` (Windows —
+  `warpgen-data\chain`);
+- аккаунт — рядом с бинарником `warpgen` (или `WARPGEN_ACCOUNT`); в портативной
+  сборке — `warpgen-data\warpgen-account.json`;
 - бинарник ищется в `WARPGEN_BIN`, затем в `PATH`, затем в текущем каталоге; если
   не найден, GUI просит путь и больше ничего не делает.
 
@@ -487,7 +494,9 @@ make gui-appimage    # переносимый AppImage (нужен ./warp-plus �
 SIGKILL уходит только если процесс не вышел за 10 секунд. Закрытие окна делает то
 же самое. В системном туннеле процесс работает как root: SIGINT от GUI до него не
 доходит, поэтому там же создаётся файл-сигнал (`--stop-file`), по которому CLI сам
-завершается, успев снять TUN и маршруты.
+завершается, успев снять TUN и маршруты. На Windows сигналы дочернему процессу не
+доставляются вообще (`Process.kill` = `TerminateProcess`), поэтому там мягкая
+остановка всегда идёт тем же файлом-сигналом.
 
 Для сборки GUI нужны Flutter SDK (desktop Linux) и GTK3 dev-пакеты (`libgtk-3-dev`,
 `ninja-build`, `clang`, `cmake`, `pkg-config`). SDK можно держать прямо в корне
@@ -503,6 +512,73 @@ SIGKILL уходит только если процесс не вышел за 1
 
 Образ — x86_64, требует glibc ≥ 2.34 (Ubuntu 22.04+, Debian 12+) и FUSE
 (иначе `--appimage-extract-and-run`); аккаунт и конфиги пишутся в `~/.warpgen`.
+
+### Windows (портативная сборка)
+
+Тот же Dart-интерфейс, отдельный runner `gui/windows/`. Установщика нет: Flutter
+собирает обычную папку, которая запускается с любого места (в том числе с
+флешки) и не пишет в реестр. `make windows` вызывает
+`scripts/build-windows.sh` и делает `warpgen-<версия>-windows-x64.zip`:
+
+```text
+warpgen-0.1.0-windows-x64.zip
+└── Release/
+    ├── warpgen_gui.exe   # Flutter-приложение
+    ├── warpgen.exe       # Go-ядро, тот же CLI
+    ├── warp-plus.exe     # нужен режиму WARP + Psiphon
+    ├── wintun.dll        # драйвер системного туннеля (Wintun 0.14.1)
+    ├── flutter_windows.dll, *.dll
+    └── data/             # assets и ICU
+```
+
+Соберите zip на Windows: нужны Flutter SDK с Windows-поддержкой и Visual Studio
+Build Tools с нагрузкой «Разработка классических приложений на C++» (MSVC, CMake,
+Ninja). Go-ядро при этом собирается с `GOOS=windows GOARCH=amd64` и `CGO_ENABLED=0`,
+поэтому сам `.exe` статический и ничего доустанавливать не требует.
+
+```bash
+make windows           # warpgen-<версия>-windows-x64.zip
+cd gui && flutter run -d windows   # запуск из репозитория (соберите ./warpgen.exe)
+```
+
+Особенности платформы:
+
+- `warpgen.exe` ищется в `WARPGEN_BIN`, затем в `PATH` (разделитель `;`), затем
+  рядом с `warpgen_gui.exe`, затем в текущем каталоге;
+- `warp-plus.exe` CLI ищет в `PATH` и рядом с собой, а `wintun.dll` — рядом с
+  `warpgen.exe`; поэтому все три лежат в одном каталоге;
+- полный системный туннель работает так же, как на Linux: переключатель
+  «Системный туннель» создаёт Wintun-адаптер `warpgen0`, ведёт весь IPv4-трафик
+  машины через цепочку, перенастраивает системный DNS и отбрасывает IPv6
+  (kill switch). Выключенный переключатель оставляет только локальный SOCKS5
+  (`127.0.0.1:8086`), как раньше;
+- GUI запускается с манифестом `requireAdministrator`: без UAC нельзя создать
+  адаптер и менять маршруты. Дочерний `warpgen.exe` наследует права, отдельного
+  запроса при подключении нет. Если `wintun.dll` рядом с exe нет, `--tun`
+  завершается понятной ошибкой;
+- все данные — рядом с `warpgen_gui.exe`, в `warpgen-data\`: настройки, аккаунт,
+  профиль endpoint'ов, identity warp-plus, кэш Psiphon и журнал маршрутов для
+  `tun-revert`. Если каталог только для чтения (например, `Program Files`),
+  GUI откатывается в `%USERPROFILE%\.warpgen`;
+- «DNS провайдера» работает: `dns-current` читает серверы физического
+  интерфейса через PowerShell; остальные DNS-пресеты и свой DNS тоже работают;
+- мягкая остановка — файлом-сигналом `--stop-file`, поэтому CLI успевает снять
+  маршруты и вернуть DNS, а не убивается `TerminateProcess`.
+
+Ручная проверка системного туннеля на Windows (нужны сеть и аккаунт):
+
+1. распаковать zip, запустить `warpgen_gui.exe`, подтвердить UAC, включить
+   «Системный туннель» и нажать «Подключиться»;
+2. `Get-NetRoute -DestinationPrefix 0.0.0.0/1` и `128.0.0.0/1` — маршруты через
+   адаптер `warpgen0`; `curl https://ifconfig.co/json` выдаёт страну Psiphon;
+3. отключиться: маршруты `warpgen0` исчезли, DNS интерфейсов прежний,
+   `Get-NetAdapter -Name warpgen0` больше не используется;
+4. при `kill -9` / снятии процесса диспетчером — `warpgen.exe tun-revert`
+   откатит маршруты и DNS по журналу из `warpgen-data\state`.
+
+При разработке GUI (`flutter run -d windows`) терминал тоже нужно запускать от
+имени администратора: собранный exe требует повышения прав, а `CreateProcess`
+из обычного процесса его не запустит.
 
 ## Android (APK, arm64)
 
@@ -555,7 +631,7 @@ Android недоступны (DNS задаёт VpnService), а APK не пров
 - `config/` — генератор `.conf` (WARP-safe AWG 2.0) и генераторы I1 (QUIC/DNS/SIP/STUN)
 - `chain/` — цепочка «внешний AWG-туннель → WARP → Psiphon»: запуск внешнего warp-plus и проверка SOCKS5
 - `core/` — самодостаточный пайплайн `run`: автомат состояний (endpoint → туннель → форвардер → страны → мониторинг; либо SOCKS5 поверх туннеля в `--warp-only`), UDP-форвардер, локальный SOCKS5-сервер, события
-- `vpn/` — системный туннель `--tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и их откат (Linux); Android получает fd от VpnService
+- `vpn/` — системный туннель `--tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и их откат (Linux и Windows); Android получает fd от VpnService
 - `services/` — проверка доступности сервисов через SOCKS5 (Яндекс, VK, Госуслуги, Ozon, Wildberries; YouTube, Instagram, X, Discord, ChatGPT, Telegram, Gemini)
 - `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `dns-presets`, `dns-current`, `services`, `gen`, `chain`, `run`)
 
@@ -572,13 +648,14 @@ Android недоступны (DNS задаёт VpnService), а APK не пров
 
 | Платформа | Статус |
 |---|---|
-| Linux | Разработка и тесты (GUI AppImage) |
+| Linux | Разработка и тесты (GUI AppImage, системный TUN) |
 | Android | APK arm64: GUI + VpnService, Go-ядро отдельным процессом из `jniLibs` |
-| Windows | Портирование |
+| Windows | Портативный x64-архив: GUI + Go-ядро, системный туннель (Wintun, UAC) и SOCKS5 |
 
 Платформенный код изолирован build tags: `tunnel/bind_linux.go`, `tunnel/bind_other.go`,
-`vpn/tun_linux.go`, `vpn/tun_other.go`, `vpn/routes_linux.go`, `vpn/routes_android.go`,
-`vpn/routes_other.go`, `vpn/privileges_linux.go`, `vpn/privileges_android.go`
+`vpn/tun_linux.go`, `vpn/tun_windows.go`, `vpn/tun_other.go`, `vpn/routes_linux.go`,
+`vpn/routes_windows.go`, `vpn/routes_android.go`, `vpn/routes_other.go`,
+`vpn/privileges_linux.go`, `vpn/privileges_windows.go`, `vpn/privileges_android.go`
 (и `chain/proc_unix.go`, `chain/proc_windows.go` для управления группой процессов).
 Никаких linux-only syscall'ов вне этих файлов; root не нужен — кроме `--interface`
 и режима `run --tun`.

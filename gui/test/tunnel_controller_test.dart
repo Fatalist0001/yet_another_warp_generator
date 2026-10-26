@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:warpgen_gui/src/controllers/tunnel_controller.dart';
 
@@ -106,6 +108,7 @@ void main() {
 
   test(
       'системный туннель уходит в CLI через pkexec и не меняется во время работы',
+      skip: Platform.isWindows ? 'pkexec есть только на Linux' : false,
       () async {
     final runner = FakeProcessRunner();
     final tunnel = TunnelController(cli: fakeCli(runner: runner));
@@ -125,6 +128,29 @@ void main() {
     tunnel.setTun(false);
     expect(tunnel.tun, isTrue, reason: 'настройки не меняются во время работы');
   });
+
+  test(
+    'на Windows системный туннель запускается напрямую и не меняется во время работы',
+    skip: Platform.isWindows ? false : 'проверка Windows-ветки',
+    () async {
+      final runner = FakeProcessRunner();
+      final tunnel = TunnelController(cli: fakeCli(runner: runner));
+
+      tunnel.setTun(true);
+      expect(tunnel.tun, isTrue);
+
+      runner.enqueue();
+      await tunnel.start();
+
+      final invocation = runner.invocations.single;
+      expect(invocation.executable, '/opt/warpgen/warpgen');
+      expect(invocation.arguments, contains('--tun'));
+
+      tunnel.setTun(false);
+      expect(tunnel.tun, isTrue,
+          reason: 'настройки не меняются во время работы');
+    },
+  );
 
   test('отказ pkexec объясняет, что не хватает прав root', () async {
     final runner = FakeProcessRunner();

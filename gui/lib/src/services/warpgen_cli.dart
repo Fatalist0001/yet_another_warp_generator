@@ -11,8 +11,8 @@ import 'dart:io';
 import '../models/dns_preset.dart';
 import '../models/service_status.dart';
 import '../platform/elevated_binary.dart';
-import '../platform/elevated_process.dart';
 import '../platform/process_runner.dart';
+import '../platform/stop_file_process.dart';
 import '../platform/warpgen_locator.dart';
 
 /// Ошибка выполнения команды: сообщение уже готово к показу пользователю.
@@ -66,11 +66,20 @@ class WarpgenCli {
     this.cacheDir,
     this.elevDir,
     this.stopFile,
+    this.stateDir,
     this.endpointCache,
-  });
+    bool? softStopByFile,
+  }) : softStopByFile = softStopByFile ?? Platform.isWindows;
 
   final ProcessRunner runner;
   final WarpgenLocation location;
+
+  /// Останавливать `run` файлом-сигналом, а не SIGINT.
+  ///
+  /// На Windows сигнал дочернему процессу не доставить: `Process.kill` — это
+  /// `TerminateProcess`, после которого CLI не успевает снять туннель и
+  /// дочерние процессы. На Linux остаётся SIGINT (softStopByFile = false).
+  final bool softStopByFile;
 
   /// Каталог identity warp-plus (по умолчанию его выбирает сам CLI).
   final String? cacheDir;
@@ -82,12 +91,19 @@ class WarpgenCli {
   /// (тесты и окружения, где бинарник и так доступен root).
   final String? elevDir;
 
-  /// Файл-сигнал остановки для процесса под root (`--tun`).
+  /// Файл-сигнал остановки (`--stop-file`).
   ///
-  /// `pkexec` работает как root, и SIGINT от GUI до него не доходит. GUI
-  /// создаёт этот файл, а CLI замечает его и завершает пайплайн сам, успев
-  /// снять TUN и маршруты. Пусто — остановка только сигналом.
+  /// Нужен процессу под root (`pkexec` не получает SIGINT от GUI) и любому
+  /// процессу на Windows. GUI создаёт этот файл, а CLI замечает его и
+  /// завершает пайплайн сам, успев снять TUN, туннель и дочерние процессы.
+  /// Пусто — остановка только сигналом.
   final String? stopFile;
+
+  /// Каталог журнала маршрутов для `tun-revert` (пусто — ~/.warpgen/state).
+  ///
+  /// Портативная сборка передаёт сюда каталог рядом с exe, чтобы журнал
+  /// аварийного отката не оставался в профиле пользователя.
+  final String? stateDir;
 
   /// Файл кэша endpoint'ов, выбранных по скорости при первой настройке.
   ///
@@ -122,6 +138,7 @@ class WarpgenCli {
       '--bind',
       bind,
       if (_filled(endpointCache)) ...['--endpoint-cache', endpointCache!],
+      if (_filled(stateDir)) ...['--state-dir', stateDir!],
       if (dns.isNotEmpty) ...['--dns', dns.join(',')],
       if (tun) '--tun',
       if (warpOnly)
@@ -147,15 +164,36 @@ class WarpgenCli {
       return runner.start(binaryPath, [...args, ...extra]);
     }
 
-    final stop = tun ? await _prepareStopFile() : null;
+    // Windows: GUI запускается с манифестом requireAdministrator, поэтому CLI
+    // наследует права и TUN поднимается напрямую, без pkexec. Сигналы
+    // дочернему процессу там не доставляются — остановка файлом.
+    if (Platform.isWindows) {
+      final winStop = await _prepareStopFile();
+      if (winStop != null) args.addAll(['--stop-file', winStop]);
+      final process = await runner.start(binaryPath, args);
+      if (winStop == null) return process;
+      return StopFileRunningProcess(process, stopFile: winStop);
+    }
+
+    // SIGINT дочернему процессу не доставить — мягкая остановка идёт тем же
+    // файлом-сигналом, что и для root под pkexec.
+    final stop = (tun || softStopByFile) ? await _prepareStopFile() : null;
     if (stop != null) args.addAll(['--stop-file', stop]);
-    if (!tun) return runner.start(binaryPath, args);
+    if (!tun) {
+      final process = await runner.start(binaryPath, args);
+      if (stop == null) return process;
+      return StopFileRunningProcess(process, stopFile: stop);
+    }
 
     final executable = await _elevatedBinary();
     try {
       final process = await runner.start('pkexec', [executable, ...args]);
       if (stop == null) return process;
-      return ElevatedRunningProcess(process, stopFile: stop);
+      return StopFileRunningProcess(
+        process,
+        stopFile: stop,
+        signalAfterWrite: true,
+      );
     } on ProcessException catch (error) {
       throw WarpgenException(
         'pkexec не запустился: ${error.message}. '
@@ -210,7 +248,7 @@ class WarpgenCli {
   }
 
   /// Готовит файл-сигнал остановки: stale-файл от прошлого прогона удаляется,
-  /// иначе новый root-процесс завершится сразу после старта.
+  /// иначе новый процесс (root или Windows) завершится сразу после старта.
   Future<String?> _prepareStopFile() async {
     final path = stopFile?.trim();
     if (path == null || path.isEmpty) return null;

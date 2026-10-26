@@ -126,7 +126,9 @@ func tcpTargets() []Target {
 }
 
 func TestCheckTCPOK(t *testing.T) {
-	d := &tcpDNSDialer{}
+	// Небольшая задержка: на Windows разрешение таймера грубее, и RTT
+	// мгновенного локального ответа может округлиться до нуля.
+	d := &tcpDNSDialer{delays: map[string]time.Duration{"1.1.1.1:53": 2 * time.Millisecond}}
 	r := CheckTCP(context.Background(), d, Target{Name: "1.1.1.1", IP: "1.1.1.1"}, Options{Timeout: time.Second})
 	if r.Status != StatusOK {
 		t.Fatalf("статус = %v (err=%v), want OK", r.Status, r.Err)
@@ -265,6 +267,9 @@ func TestCheckOK(t *testing.T) {
 	d := pipeDialer{handler: func(q []byte) []byte {
 		var m dnsmessage.Message
 		_ = m.Unpack(q)
+		// Небольшая задержка: на Windows разрешение таймера грубее, и RTT
+		// мгновенного локального ответа может округлиться до нуля.
+		time.Sleep(2 * time.Millisecond)
 		return dnsResponse(m.Header.ID, true)
 	}}
 	r := Check(context.Background(), d, Target{Name: "1.1.1.1", IP: "1.1.1.1"}, Options{Timeout: time.Second})

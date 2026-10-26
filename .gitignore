@@ -32,6 +32,12 @@ coverage.out
 # Релизный бинарник warp-plus (20 МБ), который warpgen ищет рядом с собой
 /warp-plus
 
+# Windows-сборка: Go-ядро, warp-plus и zip собираются make windows
+/warpgen.exe
+/warp-plus.exe
+wintun.dll
+/warpgen-*-windows-x64.zip
+
 # --- GUI (Flutter) ---
 # Локальный SDK Flutter (ставится в корень проекта, чтобы не занимать основной диск)
 /.toolchain/
@@ -42,6 +48,7 @@ coverage.out
 /gui/.flutter-plugins
 /gui/.flutter-plugins-dependencies
 /gui/linux/flutter/ephemeral/
+/gui/windows/flutter/ephemeral/
 
 # AppImage GUI и рабочие каталоги его сборки
 /warpgen-*-x86_64.AppImage

@@ -134,9 +134,14 @@ void main() {
       countries: const ['NL'],
       bind: '127.0.0.1:7777',
     );
-    await Future<void>.delayed(const Duration(milliseconds: 20));
 
-    final loaded = await store.load();
+    // Сохранение асинхронное: на медленном диске 20 мс мало, поэтому ждём
+    // появления записи, а не фиксированную паузу.
+    var loaded = await store.load();
+    for (var i = 0; i < 100 && loaded.bind != '127.0.0.1:7777'; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      loaded = await store.load();
+    }
     expect(loaded.warpOnly, isFalse);
     expect(loaded.tun, isTrue);
     expect(loaded.countries, ['NL']);

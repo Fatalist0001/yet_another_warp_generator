@@ -101,7 +101,9 @@ WarpgenCli fakeCli({
   String? cacheDir,
   String? elevDir,
   String? stopFile,
+  String? stateDir,
   String? endpointCache,
+  bool? softStopByFile,
 }) {
   return WarpgenCli(
     runner: runner,
@@ -113,7 +115,9 @@ WarpgenCli fakeCli({
     cacheDir: cacheDir,
     elevDir: elevDir,
     stopFile: stopFile,
+    stateDir: stateDir,
     endpointCache: endpointCache,
+    softStopByFile: softStopByFile,
   );
 }
 

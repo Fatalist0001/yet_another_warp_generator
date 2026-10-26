@@ -62,8 +62,8 @@ const (
 	maxPumpFails = 100
 )
 
-// ErrUnsupported — платформа не поддерживается (маршруты и TUN реализованы для
-// Linux; точки адаптации для остальных ОС описаны в README).
+// ErrUnsupported — платформа не поддерживается (TUN и маршруты реализованы для
+// Linux и Windows, на Android TUN даёт VpnService; для остальных ОС — заглушки).
 var ErrUnsupported = errors.New("vpn: не поддерживается на этой ОС")
 
 // DialFunc — дозвон через SOCKS5 (в vpn — dialSocks5; в тестах — своя подделка).

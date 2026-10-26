@@ -5,11 +5,14 @@
 /// 1. путь, указанный вручную (диалог «Где warpgen»);
 /// 2. переменная окружения `WARPGEN_BIN`;
 /// 3. `warpgen` в `PATH`;
-/// 4. `./warpgen` в текущем каталоге (запуск из репозитория через `make build`).
+/// 4. `warpgen` рядом с самим приложением (Windows-сборка кладёт его туда);
+/// 5. `./warpgen` в текущем каталоге (запуск из репозитория через `make build`).
 ///
-/// Файл аккаунта по умолчанию лежит рядом с бинарником — так же его создаёт
-/// `warpgen register` при запуске из каталога инструмента. Переопределяется
-/// переменной `WARPGEN_ACCOUNT`.
+/// На Windows бинарник называется `warpgen.exe`, а элементы `PATH` разделены
+/// `;`, поэтому имя и разделитель берутся из платформы. Файл аккаунта по
+/// умолчанию лежит рядом с бинарником — так же его создаёт `warpgen register`
+/// при запуске из каталога инструмента. Переопределяется переменной
+/// `WARPGEN_ACCOUNT`.
 library;
 
 import 'dart:io';
@@ -39,9 +42,19 @@ class WarpgenLocator {
   WarpgenLocator({
     Map<String, String>? environment,
     Directory? workingDirectory,
+    Directory? applicationDirectory,
+    String? binaryName,
+    String? pathListSeparator,
+    String? pathSeparator,
     bool Function(String path)? fileExists,
   })  : _environment = environment ?? Platform.environment,
         _workingDirectory = workingDirectory ?? Directory.current,
+        _applicationDirectory = applicationDirectory ?? _defaultAppDir(),
+        _binaryName =
+            binaryName ?? (Platform.isWindows ? 'warpgen.exe' : 'warpgen'),
+        _pathListSeparator =
+            pathListSeparator ?? (Platform.isWindows ? ';' : ':'),
+        _pathSeparator = pathSeparator ?? Platform.pathSeparator,
         _fileExists = fileExists ?? _defaultFileExists;
 
   static const binaryEnv = 'WARPGEN_BIN';
@@ -50,6 +63,10 @@ class WarpgenLocator {
 
   final Map<String, String> _environment;
   final Directory _workingDirectory;
+  final Directory _applicationDirectory;
+  final String _binaryName;
+  final String _pathListSeparator;
+  final String _pathSeparator;
   final bool Function(String path) _fileExists;
 
   /// Возвращает найденный бинарник или `null`, если ничего не подошло.
@@ -60,9 +77,13 @@ class WarpgenLocator {
       if (_filled(_environment[binaryEnv]))
         (path: _environment[binaryEnv]!.trim(), source: binaryEnv),
       for (final dir in _pathDirs())
-        (path: '$dir${Platform.pathSeparator}warpgen', source: 'PATH'),
+        (path: '$dir$_pathSeparator$_binaryName', source: 'PATH'),
       (
-        path: '${_workingDirectory.path}${Platform.pathSeparator}warpgen',
+        path: '${_applicationDirectory.path}$_pathSeparator$_binaryName',
+        source: 'рядом с приложением',
+      ),
+      (
+        path: '${_workingDirectory.path}$_pathSeparator$_binaryName',
         source: 'текущий каталог',
       ),
     ];
@@ -82,14 +103,24 @@ class WarpgenLocator {
     final fromEnv = _environment[accountEnv];
     if (_filled(fromEnv)) return fromEnv!.trim();
     final dir = File(binaryPath).parent.path;
-    return '$dir${Platform.pathSeparator}$defaultAccountName';
+    return '$dir$_pathSeparator$defaultAccountName';
   }
 
   Iterable<String> _pathDirs() sync* {
     final path = _environment['PATH'] ?? '';
-    for (final dir in path.split(':')) {
+    for (final dir in path.split(_pathListSeparator)) {
       if (dir.trim().isNotEmpty) yield dir.trim();
     }
+  }
+}
+
+/// Каталог запущенного приложения: рядом с ним лежат `warpgen.exe` и
+/// `warp-plus.exe` в Windows-сборке.
+Directory _defaultAppDir() {
+  try {
+    return File(Platform.resolvedExecutable).parent;
+  } on FileSystemException {
+    return Directory.current;
   }
 }
 

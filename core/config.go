@@ -65,13 +65,18 @@ type Options struct {
 	TUNName string
 	TUNMTU  int
 	// TUNDevice — готовое TUN-устройство. На Android fd даёт VpnService;
-	// на Linux пусто — устройство создаётся само.
+	// на Linux и Windows пусто — устройство создаётся само (TUN/Wintun).
 	TUNDevice vpn.Device
 	// TUNCheckPrivileges — проверка прав для TUN. На Android VpnService уже
 	// выдал права, поэтому проверка подменяется на пустую.
 	TUNCheckPrivileges func() error
+	// TUNStateDir — каталог журнала маршрутов для аварийного отката
+	// (`tun-revert`). Пусто — ~/.warpgen/state; GUI на Windows передаёт
+	// каталог рядом с exe, чтобы данные оставались портативными.
+	TUNStateDir string
 	// TUNProtect — защита исходящих сокетов от собственного VPN (Android:
-	// VpnService.protect). На Linux не нужна.
+	// VpnService.protect). На Linux и Windows не нужна: петля закрыта
+	// маршрутом /32 до внешнего endpoint.
 	TUNProtect func(fd int) error
 	// DNS — резолверы-кандидаты для DNS через цепочку (ip[:port]).
 	DNS []string
@@ -175,6 +180,7 @@ func NewConfig(opts Options) (Config, error) {
 			Device:          opts.TUNDevice,
 			CheckPrivileges: opts.TUNCheckPrivileges,
 			Protect:         opts.TUNProtect,
+			StateDir:        opts.TUNStateDir,
 			Logf:            opts.Logf,
 		})
 		if err != nil {

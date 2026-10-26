@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/Fatalist0001/yet_another_warp_generator/registration"
@@ -37,8 +38,11 @@ func TestEnsureIdentityCreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity не создана: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("права identity = %o, ожидали 600", perm)
+	// Windows не хранит POSIX-права: файл всегда отдаётся как 0666.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("права identity = %o, ожидали 600", perm)
+		}
 	}
 
 	data, err := os.ReadFile(path)

@@ -7,7 +7,8 @@
 `warpgen` — локальный CLI-инструмент на Go: регистрирует WARP-аккаунт, перебирает
 рабочие endpoint Cloudflare, проверяет DNS через туннель и генерирует `.conf` для
 AmneziaWG (WireGuard + обфускация). Туннель — **userspace**, без root, без TUN и
-без изменения маршрутов системы. Поверх CLI есть Linux-приложение на Flutter
+без изменения маршрутов системы. Поверх CLI есть приложения на Flutter для Linux
+и Windows
 (`gui/`) — только оболочка, весь туннель по-прежнему в Go-бинарнике.
 
 Подробности замысла: `README.md`. Эталонные конфиги: `refconf/` (в git не попадают,
@@ -31,6 +32,7 @@ make gui-analyze      # flutter analyze
 make gui-run          # запустить GUI (нужны Flutter SDK и GTK3 dev)
 make gui-build        # релизная сборка Linux-приложения
 make android-apk      # APK arm64: Go-ядро + VpnService + warp-plus внутри
+make windows          # портативная Windows-сборка: exe + zip (только на Windows)
 make clean            # удалить артефакты сборки
 ```
 
@@ -70,7 +72,7 @@ GOPROXY=off go test ./... -short
 | `services/` | проверка доступности сервисов через SOCKS5 (без влияния на туннель) |
 | `cli/` | CLI-команды `register`, `scan`, `dns-check`, `dns-presets`, `dns-current`, `services`, `gen`, `chain`, `run`, `tun-revert` |
 | `cmd/warpgen/` | точка входа, версия (подставляется через ldflags) |
-| `gui/` | Flutter/GUI для Linux (Material You): обёртка над CLI, своей сетевой логики нет |
+| `gui/` | Flutter/GUI для Linux и Windows (Material You): обёртка над CLI, своей сетевой логики нет |
 
 Правило: логика — в пакетах, `cli/` только собирает их вместе и печатает.
 Внутренние детали (`internal/`) не заводим — это локальный инструмент.
@@ -118,6 +120,50 @@ GOPROXY=off go test ./... -short
   `gui/build` застревает `CMAKE_INSTALL_PREFIX=/usr/local`, и шаблон больше не
   переопределяет его на `bundle/` — установка падает с `Permission denied`.
   Лечение: `rm -rf gui/build` и собрать заново.
+
+### Windows (пакет `gui/windows/`)
+
+- Та же Dart-оболочка, отдельный runner. Сборка — `make windows`
+  (`scripts/build-windows.sh`): Go-ядро под `windows/amd64` с выключенным CGO,
+  релиз warp-plus для windows-amd64, `wintun.dll` 0.14.1 (скачивается при сборке,
+  в git не лежит), `flutter build windows --release` и zip. Установщика нет:
+  содержимое `Release/` распаковывается куда угодно и запускается с
+  `warpgen_gui.exe`; реестр не трогается.
+- `warpgen.exe`, `warp-plus.exe` и `wintun.dll` кладутся рядом с `warpgen_gui.exe`:
+  GUI ищет CLI рядом с собой (`WarpgenLocator`), CLI — warp-plus рядом с собой
+  (`chain.ResolveWarpPlus`), а `golang.zx2c4.com/wintun` ищет DLL только в
+  каталоге приложения и System32. Имя бинарника на Windows — `warpgen.exe`,
+  элементы `PATH` разделены `;`.
+- Системный туннель есть: `vpn/tun_windows.go` создаёт Wintun-адаптер через
+  `amneziawg-go/tun`, `vpn/routes_windows.go` настраивает адрес, маршруты
+  `0.0.0.0/1` + `128.0.0.0/1`, `::/0` (IPv6 уводится в TUN и отбрасывается),
+  исключение endpoint и системный DNS через PowerShell (`Get-NetRoute`,
+  `New-NetRoute`, `Set-DnsClientServerAddress`) — без разбора локализованного
+  `netsh`. Переключатель TUN виден (`Platform.isLinux || Platform.isWindows`), на
+  первом запуске включён; выбор хранится в `gui.json`.
+- GUI запускается с `requireAdministrator`. Уровень задаётся
+  `target_link_options(... /MANIFESTUAC:...)` в `gui/windows/runner/CMakeLists.txt`,
+  а не `trustInfo` в `runner.exe.manifest`: CMake уже отдаёт манифест линкеру с
+  `asInvoker`, и второй `level` ломает `mt.exe` (`manifest authoring error
+  c1010001`). `warpgen.exe` наследует права, `vpn.CheckPrivileges` проверяет
+  elevation до сети.
+- Данные портативные: настройки, аккаунт, `endpoints.json`, `chain/`, `state/` и
+  `run/` лежат в `warpgen-data` рядом с `warpgen_gui.exe` (`AppPaths`,
+  `AppDependencies`). Если туда нельзя писать — откат в `%USERPROFILE%\.warpgen`.
+  `--state-dir`, `--endpoint-cache`, `--cache-dir`, `--account` и `--stop-file`
+  GUI передаёт явно, поэтому CLI не пишет в профиль.
+- Мягкая остановка — файлом-сигналом `--stop-file`: в `dart:io` на Windows нельзя
+  доставить SIGINT дочернему процессу (`Process.kill` = `TerminateProcess`).
+  Поэтому `WarpgenCli.softStopByFile` включён на Windows, а обёртка —
+  `StopFileRunningProcess` (без дублирующего сигнала); SIGKILL — по таймауту.
+- `dns-current` работает: `vpn.ReadCurrentDNS` читает серверы интерфейса
+  маршрута по умолчанию через PowerShell, поэтому пресет «DNS провайдера» доступен.
+  Домашний каталог берётся из `USERPROFILE`.
+- Тесты Go должны быть зелёными и на Windows: Linux-only тесты системного
+  туннеля лежат в файлах с `//go:build linux` (`vpn/tunnel_linux_test.go`,
+  `cli/tun_test.go`), проверки POSIX-прав пропускаются на Windows, а
+  Windows-маршруты проверяются офлайн в `vpn/routes_windows_test.go` на фейковом
+  `vpn.Executor` (создавать реальный TUN в тестах нельзя).
 
 ### Android (пакет `gui/android/`)
 
@@ -173,7 +219,9 @@ GOPROXY=off go test ./... -short
 - Единственное исключение — явный флаг `run --tun`: он поднимает системный TUN и
   меняет маршруты. Это изолировано в пакете `vpn/`, включается только флагом и не
   должно протекать в остальные команды (`register`, `scan`, `dns-check`, `gen`,
-  `chain`, `run` без `--tun`).
+  `chain`, `run` без `--tun`). На Windows для этого нужны Wintun и права
+  администратора, на Linux — root; без них `--tun` падает до сети и системных
+  действий.
 - Задержку мерить **внутри туннеля**, не через ICMP/Ping (на Android ICMP
   ограничен и без прав показывает `?`).
 - Не добавлять linux-only syscall'ы вне файлов с build tags
@@ -322,7 +370,7 @@ GUI (`gui/`) ключей не создаёт и не копирует: конф
 - Тесты GUI только офлайн (`make gui-test`): окно и оболочка проверены, а
   «Подключиться → туннель → проверка сервисов» — live-чек-лист (`make
   gui-test-live`, нужны сеть, аккаунт и настоящий `./warpgen`).
-- Фичи вне v1: split-tunneling, кастомный клиент, кроссплатформенный GUI (сейчас
-  есть только Linux-приложение в `gui/`), релеи, warp-in-warp, MASQUE.
+- Фичи вне v1: split-tunneling, кастомный клиент, macOS-версия GUI (сейчас есть
+  Linux, Windows и Android в `gui/`), релеи, warp-in-warp, MASQUE.
 - Сквозная проверка «импортировали в AmneziaVPN → соединение поднялось → `loc != RU`»
   делается руками на устройстве.

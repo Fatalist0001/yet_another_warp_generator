@@ -13,9 +13,11 @@ const stopFilePoll = 250 * time.Millisecond
 // watchStopFile вызывает stop, когда появляется файл path.
 //
 // Нужен GUI с системным туннелем: процесс запущен через pkexec под root, а
-// непривилегированный GUI не может послать ему SIGINT (EPERM). Файл создаёт
-// GUI; root читает его. Файл удаляется, чтобы следующий запуск не остановился
-// сразу. watchStopFile завершается по ctx или после срабатывания.
+// непривилегированный GUI не может послать ему SIGINT (EPERM). На Windows
+// сигналы дочернему процессу не доставляются вообще, поэтому тем же способом
+// останавливается и обычный userspace-прогон. Файл создаёт GUI; CLI читает
+// его и удаляет, чтобы следующий запуск не остановился сразу. watchStopFile
+// завершается по ctx или после срабатывания.
 func watchStopFile(ctx context.Context, path string, stop func(), interval time.Duration) {
 	if path == "" {
 		return

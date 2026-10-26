@@ -1,6 +1,8 @@
 /// Экран первого запуска: GUI не нашёл бинарник `warpgen`.
 library;
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../widgets/ui.dart';
@@ -83,9 +85,11 @@ class _SetupPageState extends State<SetupPage> {
                         enabled: !_busy,
                         autofocus: true,
                         onSubmitted: (_) => _submit(),
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Путь к бинарнику',
-                          hintText: '/home/user/warpgen/warpgen',
+                          hintText: Platform.isWindows
+                              ? r'C:\warpgen\warpgen.exe'
+                              : '/home/user/warpgen/warpgen',
                         ),
                       ),
                       const SizedBox(height: 12),

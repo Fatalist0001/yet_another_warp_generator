@@ -56,7 +56,8 @@ func runRun(args []string) error {
 	ruFailures := fs.Int("ru-failures", core.DefaultRUFailures, "сколько подряд замеров выхода RU считать сменой страны")
 	retryPause := fs.Duration("retry-pause", core.DefaultRetryPause, "пауза перед новой попыткой после сбоя работавшей цепочки")
 	account := fs.String("account", registration.DefaultAccountFile, "файл аккаунта WARP (ключи туннеля и identity)")
-	tun := fs.Bool("tun", false, "системный туннель: весь трафик машины идёт по цепочке (нужен root)")
+	tun := fs.Bool("tun", false, "системный туннель: весь трафик машины идёт по цепочке (нужен root/администратор)")
+	stateDir := fs.String("state-dir", "", "каталог журнала маршрутов для tun-revert (по умолчанию ~/.warpgen/state)")
 	tunName := fs.String("tun-name", vpn.DefaultTUNName, "имя TUN-интерфейса")
 	tunMTU := fs.Int("tun-mtu", vpn.DefaultTUNMTU, "MTU TUN-интерфейса")
 	tunFD := fs.Int("tun-fd", -1, "готовый файловый дескриптор TUN (Android: fd от VpnService)")
@@ -64,7 +65,7 @@ func runRun(args []string) error {
 	dns := fs.String("dns", vpn.DefaultDNS, "резолверы для DNS через цепочку (IP/hostname[:port] через запятую; в --tun hostname резолвится заранее)")
 	udp := fs.String("udp", string(vpn.UDPDrop), "политика UDP: drop — отбрасывать (QUIC ломается, приложения уходят на TCP)")
 	dryRun := fs.Bool("dry-run", false, "показать системные команды и ничего не менять (с --tun)")
-	stopFile := fs.String("stop-file", "", "файл-сигнал остановки: появление файла завершает пайплайн (для GUI под pkexec)")
+	stopFile := fs.String("stop-file", "", "файл-сигнал остановки: появление файла завершает пайплайн (GUI под pkexec и на Windows)")
 	jsonOut := fs.Bool("json", false, "события строками JSON (по одному объекту в строке)")
 	debug := fs.Bool("debug", false, "подробный вывод (в stderr)")
 	if err := fs.Parse(args); err != nil {
@@ -143,6 +144,7 @@ func runRun(args []string) error {
 		TUNName:   *tunName,
 		TUNMTU:    *tunMTU,
 		TUNDevice: tunDevice,
+		TUNStateDir: *stateDir,
 		TUNCheckPrivileges: func() error {
 			if tunDevice != nil {
 				return nil

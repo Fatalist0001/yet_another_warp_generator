@@ -25,6 +25,7 @@ func runTunRevert(args []string) error {
 	// Справка по флагам — в stdout, как у run: это рабочая команда.
 	fs.SetOutput(os.Stdout)
 	tunName := fs.String("tun-name", vpn.DefaultTUNName, "имя TUN-интерфейса")
+	stateDir := fs.String("state-dir", "", "каталог журнала маршрутов (по умолчанию ~/.warpgen/state)")
 	dryRun := fs.Bool("dry-run", false, "показать команды отката и ничего не менять")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -38,8 +39,9 @@ func runTunRevert(args []string) error {
 
 	// Каждую команду печатаем всегда: аварийный откат должен быть виден целиком.
 	n, err := vpn.RevertTunState(ctx, vpn.Options{
-		TUNName: *tunName,
-		DryRun:  *dryRun,
+		TUNName:  *tunName,
+		StateDir: *stateDir,
+		DryRun:   *dryRun,
 		Logf:    func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
 	})
 	if err != nil {

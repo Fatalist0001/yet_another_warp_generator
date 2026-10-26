@@ -1,4 +1,4 @@
-.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean gui-deps gui-test gui-test-live gui-analyze gui-run gui-build gui-appimage android-apk
+.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean gui-deps gui-test gui-test-live gui-analyze gui-run gui-build gui-appimage android-apk windows
 
 # GUI на Flutter: SDK берётся из PATH или из локального .toolchain/flutter/bin,
 # кэш пакетов — рядом с локальным SDK (основной диск не занимаем).
@@ -74,3 +74,8 @@ gui-appimage: build gui-build
 # Эмулятор не нужен; установка на телефон — adb install -r warpgen-*-arm64.apk.
 android-apk:
 	./scripts/build-android.sh
+
+# Windows-сборка: Go-ядро (warpgen.exe), warp-plus.exe, Flutter-приложение и zip.
+# Собирается только на Windows: нужны Flutter Windows и Visual Studio C++.
+windows:
+	./scripts/build-windows.sh

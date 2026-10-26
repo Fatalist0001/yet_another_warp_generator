@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"golang.org/x/crypto/curve25519"
@@ -59,8 +60,11 @@ func TestSaveLoadAccountRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("права файла = %o, want 600", perm)
+	// Windows не хранит POSIX-права: файл всегда отдаётся как 0666.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("права файла = %o, want 600", perm)
+		}
 	}
 
 	out, err := LoadAccount(path)

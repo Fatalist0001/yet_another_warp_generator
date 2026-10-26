@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -366,6 +367,7 @@ func waitPortFree(bind string, timeout time.Duration) {
 }
 
 // ResolveWarpPlus ищет бинарник warp-plus: явный путь → PATH → каталог рядом с warpgen.
+// На Windows рядом лежит warp-plus.exe: имя без расширения там не открыть.
 // Экспортирована для локального preflight'а (пакет core проверяет бинарник до старта).
 func ResolveWarpPlus(explicit string) (string, error) {
 	if explicit != "" {
@@ -378,9 +380,16 @@ func ResolveWarpPlus(explicit string) (string, error) {
 		return p, nil
 	}
 	if self, err := os.Executable(); err == nil {
-		cand := filepath.Join(filepath.Dir(self), "warp-plus")
-		if err := checkExecutable(cand); err == nil {
-			return cand, nil
+		dir := filepath.Dir(self)
+		names := []string{"warp-plus"}
+		if runtime.GOOS == "windows" {
+			names = append(names, "warp-plus.exe")
+		}
+		for _, name := range names {
+			cand := filepath.Join(dir, name)
+			if err := checkExecutable(cand); err == nil {
+				return cand, nil
+			}
 		}
 	}
 	return "", errors.New("не нашли бинарник warp-plus: положите его в PATH или рядом с warpgen либо укажите --warp-plus")

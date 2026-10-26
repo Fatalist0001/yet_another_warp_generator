@@ -1,5 +1,5 @@
 name: warpgen_gui
-description: Material You интерфейс к локальному CLI warpgen (Linux).
+description: Material You интерфейс к локальному CLI warpgen (Linux/Windows).
 publish_to: none
 version: 0.1.0+1
 

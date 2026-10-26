@@ -55,7 +55,9 @@ void main() {
       );
     });
 
-    test('системный туннель идёт через pkexec с --tun и --cache-dir', () async {
+    test('системный туннель идёт через pkexec с --tun и --cache-dir',
+        skip: Platform.isWindows ? 'pkexec есть только на Linux' : false,
+        () async {
       final runner = FakeProcessRunner();
       final cli = fakeCli(
         runner: runner,
@@ -87,7 +89,9 @@ void main() {
       ]);
     });
 
-    test('для root берёт копию бинарника, а не файл AppImage', () async {
+    test('для root берёт копию бинарника, а не файл AppImage',
+        skip: Platform.isWindows ? 'pkexec есть только на Linux' : false,
+        () async {
       final temp = Directory.systemTemp.createTempSync('warpgen-elev-test');
       addTearDown(() => temp.deleteSync(recursive: true));
       final source = Directory('${temp.path}/appimage')..createSync();
@@ -115,7 +119,10 @@ void main() {
 
       final invocation = runner.invocations.single;
       expect(invocation.executable, 'pkexec');
-      expect(invocation.arguments.first, '$elev/warpgen');
+      expect(
+        invocation.arguments.first,
+        '$elev${Platform.pathSeparator}warpgen',
+      );
       expect(invocation.arguments, isNot(contains(binary.path)),
           reason:
               'AppImage доступен только пользователю, root его не прочитает');
@@ -124,7 +131,9 @@ void main() {
           reason: 'warp-plus ищется рядом с warpgen');
     });
 
-    test('root-процесс останавливается файлом-сигналом, а не SIGINT', () async {
+    test('root-процесс останавливается файлом-сигналом, а не SIGINT',
+        skip: Platform.isWindows ? 'pkexec есть только на Linux' : false,
+        () async {
       final temp = Directory.systemTemp.createTempSync('warpgen-stop-test');
       addTearDown(() => temp.deleteSync(recursive: true));
       final stopFile = '${temp.path}/run/tun.stop';
@@ -163,7 +172,74 @@ void main() {
       );
     });
 
-    test('без pkexec объясняет, что нужен polkit', () async {
+    test('на Windows останавливает run файлом-сигналом, а не сигналом', () async {
+      final temp = Directory.systemTemp.createTempSync('warpgen-win-stop-test');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final stopFile = '${temp.path}/run/stop';
+
+      final runner = FakeProcessRunner();
+      final cli = fakeCli(
+        runner: runner,
+        stopFile: stopFile,
+        softStopByFile: true,
+      );
+      final inner = runner.enqueue();
+
+      final process = await cli.startRun(
+        warpOnly: true,
+        countries: const ['NL'],
+        bind: '127.0.0.1:8086',
+      );
+
+      final invocation = runner.invocations.single;
+      expect(invocation.executable, cli.binaryPath);
+      expect(invocation.arguments,
+          containsAllInOrder(['--stop-file', stopFile]));
+      expect(invocation.arguments, isNot(contains('--tun')));
+
+      process.requestStop();
+      expect(File(stopFile).readAsStringSync(), 'stop');
+      expect(
+        inner.interrupted,
+        isFalse,
+        reason: 'сигнал на Windows убивает процесс без остановки туннеля',
+      );
+    });
+
+    test('TUN на Windows запускает CLI напрямую, без pkexec',
+        skip: Platform.isWindows ? false : 'проверка Windows-ветки', () async {
+      final temp = Directory.systemTemp.createTempSync('warpgen-win-tun-test');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final stopFile = '${temp.path}/run/stop';
+      final stateDir = '${temp.path}/state';
+
+      final runner = FakeProcessRunner();
+      final cli = fakeCli(
+        runner: runner,
+        stopFile: stopFile,
+        stateDir: stateDir,
+      );
+      runner.enqueue();
+
+      await cli.startRun(
+        warpOnly: true,
+        countries: const ['NL'],
+        bind: '127.0.0.1:8086',
+        tun: true,
+      );
+
+      final invocation = runner.invocations.single;
+      expect(invocation.executable, cli.binaryPath);
+      expect(invocation.arguments, contains('--tun'));
+      expect(invocation.arguments,
+          containsAllInOrder(['--stop-file', stopFile]));
+      expect(invocation.arguments,
+          containsAllInOrder(['--state-dir', stateDir]));
+    });
+
+    test('без pkexec объясняет, что нужен polkit',
+        skip: Platform.isWindows ? 'pkexec есть только на Linux' : false,
+        () async {
       final cli = WarpgenCli(
         runner: _MissingExecRunner(),
         location: const WarpgenLocation(

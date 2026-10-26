@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,10 @@ import (
 func TestDefaultCacheDirLivesInHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		// os.UserHomeDir на Windows читает USERPROFILE, а не HOME.
+		t.Setenv("USERPROFILE", home)
+	}
 
 	want := filepath.Join(home, ".warpgen", "chain")
 	if got := DefaultCacheDir(); got != want {

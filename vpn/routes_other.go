@@ -1,12 +1,11 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package vpn
 
 import "context"
 
-// Маршруты для других ОС не реализованы: на Windows это netsh или
-// CreateIpForwardEntry, на macOS — route и networksetup. Точки адаптации описаны
-// в README.
+// Маршруты для остальных ОС не реализованы: на macOS это route и networksetup
+// (Linux — routes_linux.go, Windows — routes_windows.go).
 func newRouteManager(opts Options) (RouteManager, error) {
 	return nil, ErrUnsupported
 }

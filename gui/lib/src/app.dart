@@ -14,6 +14,7 @@ import 'controllers/tunnel_controller.dart';
 import 'pages/settings_page.dart';
 import 'pages/setup_page.dart';
 import 'pages/tunnel_page.dart';
+import 'platform/app_paths.dart';
 import 'platform/process_runner.dart';
 import 'platform/warpgen_locator.dart';
 import 'services/settings_store.dart';
@@ -21,24 +22,54 @@ import 'services/warpgen_cli.dart';
 
 /// Собранные зависимости приложения.
 class AppDependencies {
-  const AppDependencies({required this.cli, required this.homeDir});
+  const AppDependencies({
+    required this.cli,
+    required this.homeDir,
+    required this.dataDir,
+  });
 
   final WarpgenCli cli;
   final String homeDir;
 
+  /// Каталог данных: `~/.warpgen` или портативный `warpgen-data` рядом с exe.
+  final String dataDir;
+
   /// Каталог identity warp-plus и кэша Psiphon.
-  String get cacheDir => '$homeDir/.warpgen/chain';
+  String get cacheDir => '$dataDir/chain';
 
   /// Файл настроек GUI.
-  String get settingsPath => '$homeDir/.warpgen/gui.json';
+  String get settingsPath => '$dataDir/gui.json';
 
   /// Кэш endpoint'ов, выбранных по скорости при первой настройке.
-  String get endpointCachePath => '$homeDir/.warpgen/endpoints.json';
+  String get endpointCachePath => '$dataDir/endpoints.json';
+}
+
+/// Включать ли системный туннель при старте.
+///
+/// Android — всегда: TUN создаёт VpnService, иначе VPN не будет вообще.
+/// Windows — по умолчанию на первом запуске (портативная сборка и так идёт с
+/// правами администратора, а рядовому пользователю нужен весь трафик, а не
+/// SOCKS5); дальше решает сохранённый выбор. Linux — только сохранённый выбор.
+bool initialTunEnabled({
+  required bool isAndroid,
+  required bool isWindows,
+  required bool firstRun,
+  required bool saved,
+}) {
+  if (isAndroid) return true;
+  if (isWindows) return firstRun || saved;
+  return saved;
 }
 
 /// Приложение warpgen.
 class WarpgenApp extends StatefulWidget {
-  const WarpgenApp({super.key, this.locator, this.runner, this.environment});
+  const WarpgenApp({
+    super.key,
+    this.locator,
+    this.runner,
+    this.environment,
+    this.dataDir,
+  });
 
   /// Поиск бинарника (в тестах подменяется).
   final WarpgenLocator? locator;
@@ -48,6 +79,9 @@ class WarpgenApp extends StatefulWidget {
 
   /// Окружение: `HOME`, `PATH`, `WARPGEN_BIN`.
   final Map<String, String>? environment;
+
+  /// Каталог данных рядом с exe (Windows). `null` — `~/.warpgen`.
+  final String? dataDir;
 
   @override
   State<WarpgenApp> createState() => _WarpgenAppState();
@@ -74,6 +108,7 @@ class _WarpgenAppState extends State<WarpgenApp> {
         locator: widget.locator ?? WarpgenLocator(environment: environment),
         runner: widget.runner ?? const IoProcessRunner(),
         environment: environment,
+        dataDir: widget.dataDir,
         onThemeModeChanged: _setThemeMode,
       ),
     );
@@ -86,12 +121,14 @@ class _Root extends StatefulWidget {
     required this.locator,
     required this.runner,
     required this.environment,
+    required this.dataDir,
     required this.onThemeModeChanged,
   });
 
   final WarpgenLocator locator;
   final ProcessRunner runner;
   final Map<String, String> environment;
+  final String? dataDir;
   final ValueChanged<ThemeMode> onThemeModeChanged;
 
   @override
@@ -108,11 +145,10 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
   ServicesController? _services;
   bool _wasLive = false;
 
-  String get _homeDir {
-    final home = widget.environment['HOME'];
-    if (home != null && home.trim().isNotEmpty) return home.trim();
-    return Directory.current.path;
-  }
+  String get _homeDir => homeDirectory(widget.environment);
+
+  /// Портативный каталог данных; без него — прежний `~/.warpgen`.
+  String get _dataDir => widget.dataDir ?? '$_homeDir/.warpgen';
 
   @override
   void initState() {
@@ -152,10 +188,10 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
   /// Ищет бинарник и готовит контроллеры. `false` — не нашли.
   Future<bool> _bootstrap({String? explicitPath}) async {
     setState(() => _loading = true);
-    final location = await widget.locator.locate(explicitPath: explicitPath);
+    final located = await widget.locator.locate(explicitPath: explicitPath);
     if (!mounted) return false;
 
-    if (location == null) {
+    if (located == null) {
       setState(() {
         _loading = false;
         _notFoundPath = explicitPath;
@@ -163,23 +199,38 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
       return false;
     }
 
+    // В портативном режиме аккаунт тоже лежит рядом с exe, а не рядом с CLI:
+    // папку с программой тогда можно перенести целиком.
+    final location = widget.dataDir == null
+        ? located
+        : WarpgenLocation(
+            binaryPath: located.binaryPath,
+            accountFile: '$_dataDir/warpgen-account.json',
+            source: located.source,
+          );
+
     final deps = AppDependencies(
       cli: WarpgenCli(
         runner: widget.runner,
         location: location,
-        cacheDir: '$_homeDir/.warpgen/chain',
+        cacheDir: '$_dataDir/chain',
         // AppImage смонтирован только для пользователя: root не прочитает
         // бинарник, а pkexec проверяет доступ до запроса пароля.
-        elevDir: '$_homeDir/.warpgen/elev',
-        // Процесс под pkexec — root, SIGINT из GUI ему недоступен: остановка
-        // идёт файлом, который CLI проверяет сам.
-        stopFile: '$_homeDir/.warpgen/run/tun.stop',
-        endpointCache: '$_homeDir/.warpgen/endpoints.json',
+        elevDir: '$_dataDir/elev',
+        // Остановка из GUI: процесс под pkexec — root, а на Windows сигналы
+        // дочернему процессу не доставляются. CLI проверяет файл сам.
+        stopFile: '$_dataDir/run/stop',
+        stateDir: '$_dataDir/state',
+        endpointCache: '$_dataDir/endpoints.json',
       ),
       homeDir: _homeDir,
+      dataDir: _dataDir,
     );
 
     final account = AccountController(cli: deps.cli);
+    // Первый запуск определяем до load(): он может сохранить gui.json
+    // (например, если в старом файле был удалённый DNS-пресет).
+    final firstRun = !File(deps.settingsPath).existsSync();
     final settings = SettingsController(
       cli: deps.cli,
       store: SettingsStore(path: deps.settingsPath),
@@ -192,7 +243,16 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
       warpOnly: settings.settings.warpOnly,
       // На Android системный туннель — единственный режим, который даёт VPN
       // для других приложений: TUN создаёт VpnService, а не CLI под root.
-      tun: Platform.isAndroid ? true : settings.settings.tun,
+      // На Windows это режим по умолчанию при первом запуске: портативная
+      // сборка и так запускается с правами администратора, а отдавать
+      // рядовому пользователю один SOCKS5 незачем. Выключить можно
+      // переключателем — тогда выбор сохраняется в gui.json.
+      tun: initialTunEnabled(
+        isAndroid: Platform.isAndroid,
+        isWindows: Platform.isWindows,
+        firstRun: firstRun,
+        saved: settings.settings.tun,
+      ),
       countries: settings.settings.countries,
       bind: settings.settings.bind,
       dnsResolver: settings.resolveDns,

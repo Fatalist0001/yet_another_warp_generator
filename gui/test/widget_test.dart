@@ -95,7 +95,12 @@ void main() {
     expect(find.text('Подключиться'), findsOneWidget);
     expect(find.text('WARP'), findsOneWidget);
     expect(find.text('WARP + Psiphon'), findsOneWidget);
-    expect(find.text('Системный туннель'), findsOneWidget);
+    // На Android системный туннель включает VpnService без выбора;
+    // на Linux и Windows переключатель виден.
+    expect(
+      find.text('Системный туннель'),
+      Platform.isLinux || Platform.isWindows ? findsOneWidget : findsNothing,
+    );
     expect(find.text('Терминал'), findsOneWidget);
     expect(find.byType(NavigationBar), findsNothing);
     expect(find.byType(NavigationRail), findsNothing);
@@ -186,7 +191,9 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: AppTheme.light(),
-        home: Scaffold(body: TunnelPage(tunnel: tunnel, services: services)),
+        home: Scaffold(
+          body: TunnelPage(tunnel: tunnel, services: services, showTun: true),
+        ),
       ),
     );
     await tester.pump();

@@ -17,10 +17,18 @@ class TunnelPage extends StatelessWidget {
     super.key,
     required this.tunnel,
     required this.services,
+    this.showTun,
   });
 
   final TunnelController tunnel;
   final ServicesController services;
+
+  /// Показывать переключатель системного туннеля.
+  ///
+  /// По умолчанию — на Linux и Windows: на Android его включает VpnService без
+  /// выбора. Параметр нужен тестам, которые гоняют одну и ту же разметку на
+  /// любой платформе.
+  final bool? showTun;
 
   @override
   Widget build(BuildContext context) {
@@ -40,7 +48,7 @@ class TunnelPage extends StatelessWidget {
                 _ConnectButton(tunnel: tunnel),
                 const SizedBox(height: 24),
                 _ModeSelector(tunnel: tunnel),
-                if (Platform.isLinux) ...[
+                if (showTun ?? (Platform.isLinux || Platform.isWindows)) ...[
                   const SizedBox(height: 8),
                   _TunSwitch(tunnel: tunnel),
                 ],
@@ -241,8 +249,10 @@ class _TunSwitch extends StatelessWidget {
         contentPadding: EdgeInsets.zero,
         dense: true,
         title: const Text('Системный туннель'),
-        subtitle: const Text(
-          'Весь трафик машины через цепочку · нужен root',
+        subtitle: Text(
+          Platform.isWindows
+              ? 'Весь трафик машины через цепочку · нужны права администратора'
+              : 'Весь трафик машины через цепочку · нужен root',
         ),
         value: tunnel.tun,
         onChanged: tunnel.isRunning ? null : tunnel.setTun,
