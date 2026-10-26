@@ -1,4 +1,4 @@
-.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean gui-deps gui-test gui-test-live gui-analyze gui-run gui-build gui-appimage
+.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean gui-deps gui-test gui-test-live gui-analyze gui-run gui-build gui-appimage android-apk
 
 # GUI на Flutter: SDK берётся из PATH или из локального .toolchain/flutter/bin,
 # кэш пакетов — рядом с локальным SDK (основной диск не занимаем).
@@ -69,3 +69,8 @@ gui-build:
 # объяснит, что скачать, если их нет.
 gui-appimage: build gui-build
 	./scripts/build-appimage.sh
+
+# Android APK (arm64): Go-ядро + warp-plus внутри APK, TUN через VpnService.
+# Эмулятор не нужен; установка на телефон — adb install -r warpgen-*-arm64.apk.
+android-apk:
+	./scripts/build-android.sh

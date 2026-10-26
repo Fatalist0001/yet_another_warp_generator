@@ -64,6 +64,15 @@ type Options struct {
 	// TUNName / TUNMTU — имя и MTU TUN-интерфейса.
 	TUNName string
 	TUNMTU  int
+	// TUNDevice — готовое TUN-устройство. На Android fd даёт VpnService;
+	// на Linux пусто — устройство создаётся само.
+	TUNDevice vpn.Device
+	// TUNCheckPrivileges — проверка прав для TUN. На Android VpnService уже
+	// выдал права, поэтому проверка подменяется на пустую.
+	TUNCheckPrivileges func() error
+	// TUNProtect — защита исходящих сокетов от собственного VPN (Android:
+	// VpnService.protect). На Linux не нужна.
+	TUNProtect func(fd int) error
 	// DNS — резолверы-кандидаты для DNS через цепочку (ip[:port]).
 	DNS []string
 	// UDP — политика обработки UDP (поддерживается drop).
@@ -158,12 +167,15 @@ func NewConfig(opts Options) (Config, error) {
 		// Системный туннель собирается сразу: проверки (права, адрес, политика
 		// UDP, список резолверов) должны провалиться до сетевых действий.
 		sys, err := vpn.New(vpn.Options{
-			TUNName: opts.TUNName,
-			MTU:     opts.TUNMTU,
-			DNS:     opts.DNS,
-			UDP:     vpn.UDPPolicy(opts.UDP),
-			DryRun:  opts.DryRun,
-			Logf:    opts.Logf,
+			TUNName:         opts.TUNName,
+			MTU:             opts.TUNMTU,
+			DNS:             opts.DNS,
+			UDP:             vpn.UDPPolicy(opts.UDP),
+			DryRun:          opts.DryRun,
+			Device:          opts.TUNDevice,
+			CheckPrivileges: opts.TUNCheckPrivileges,
+			Protect:         opts.TUNProtect,
+			Logf:            opts.Logf,
 		})
 		if err != nil {
 			return Config{}, err

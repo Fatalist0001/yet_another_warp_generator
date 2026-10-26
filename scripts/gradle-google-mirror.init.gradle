@@ -1,0 +1,27 @@
+// В некоторых окружениях dl.google.com недоступен, а dl-ssl.google.com отдаёт
+// тот же Google Maven. init-скрипт переписывает URL всех google()-репозиториев,
+// включая pluginManagement и buildscript, чтобы Gradle не зависал на таймаутах.
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository
+
+def rewrite = { repositories ->
+    repositories.withType(MavenArtifactRepository).configureEach { repo ->
+        def current = repo.url?.toString() ?: ''
+        if (current.contains('dl.google.com') || current.contains('maven.google.com')) {
+            repo.setUrl('https://dl-ssl.google.com/dl/android/maven2')
+        }
+    }
+}
+
+gradle.beforeSettings { settings ->
+    rewrite(settings.pluginManagement.repositories)
+    try {
+        rewrite(settings.dependencyResolutionManagement.repositories)
+    } catch (Exception ignored) {
+        // dependencyResolutionManagement может быть ещё не настроен
+    }
+}
+
+gradle.beforeProject { project ->
+    rewrite(project.buildscript.repositories)
+    rewrite(project.repositories)
+}

@@ -114,7 +114,6 @@ class WarpgenCli {
     bool tun = false,
     List<String> dns = const [],
   }) async {
-    final stop = tun ? await _prepareStopFile() : null;
     final args = <String>[
       'run',
       '--json',
@@ -135,8 +134,21 @@ class WarpgenCli {
         '--cache-dir',
         cacheDir!
       ],
-      if (stop != null) ...['--stop-file', stop],
     ];
+
+    // Android: TUN создаёт VpnService, а не pkexec. CLI получает fd по
+    // unix-сокету от Android-обёртки, поэтому root и polkit здесь не нужны.
+    if (Platform.isAndroid && tun) {
+      final extra = <String>[];
+      final warpPlus = File('${location.binaryDir}/libwarp-plus.so');
+      if (await warpPlus.exists()) {
+        extra.addAll(['--warp-plus', warpPlus.path]);
+      }
+      return runner.start(binaryPath, [...args, ...extra]);
+    }
+
+    final stop = tun ? await _prepareStopFile() : null;
+    if (stop != null) args.addAll(['--stop-file', stop]);
     if (!tun) return runner.start(binaryPath, args);
 
     final executable = await _elevatedBinary();

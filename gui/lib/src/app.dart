@@ -190,7 +190,9 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
     final tunnel = TunnelController(
       cli: deps.cli,
       warpOnly: settings.settings.warpOnly,
-      tun: settings.settings.tun,
+      // На Android системный туннель — единственный режим, который даёт VPN
+      // для других приложений: TUN создаёт VpnService, а не CLI под root.
+      tun: Platform.isAndroid ? true : settings.settings.tun,
       countries: settings.settings.countries,
       bind: settings.settings.bind,
       dnsResolver: settings.resolveDns,

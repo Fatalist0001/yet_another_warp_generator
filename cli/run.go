@@ -59,6 +59,8 @@ func runRun(args []string) error {
 	tun := fs.Bool("tun", false, "системный туннель: весь трафик машины идёт по цепочке (нужен root)")
 	tunName := fs.String("tun-name", vpn.DefaultTUNName, "имя TUN-интерфейса")
 	tunMTU := fs.Int("tun-mtu", vpn.DefaultTUNMTU, "MTU TUN-интерфейса")
+	tunFD := fs.Int("tun-fd", -1, "готовый файловый дескриптор TUN (Android: fd от VpnService)")
+	tunFDSocket := fs.String("tun-fd-socket", "", "unix-сокет, по которому получить fd TUN (Android: VpnService)")
 	dns := fs.String("dns", vpn.DefaultDNS, "резолверы для DNS через цепочку (IP/hostname[:port] через запятую; в --tun hostname резолвится заранее)")
 	udp := fs.String("udp", string(vpn.UDPDrop), "политика UDP: drop — отбрасывать (QUIC ломается, приложения уходят на TCP)")
 	dryRun := fs.Bool("dry-run", false, "показать системные команды и ничего не менять (с --tun)")
@@ -78,10 +80,15 @@ func runRun(args []string) error {
 		codes[i] = strings.ToUpper(codes[i])
 	}
 
+	if !*tun && (*tunFD >= 0 || strings.TrimSpace(*tunFDSocket) != "") {
+		return errors.New("--tun-fd/--tun-fd-socket имеют смысл только вместе с --tun")
+	}
+
 	// Права проверяем до любого сетевого действия: без root --tun должен
 	// упасть с понятным сообщением, не пытаясь резолвить DNS и не трогая
 	// аккаунт. --dry-run ничего не меняет в системе, поэтому root не нужен.
-	if *tun && !*dryRun {
+	// Android передаёт готовый fd от VpnService: там root не нужен.
+	if *tun && !*dryRun && *tunFD < 0 && strings.TrimSpace(*tunFDSocket) == "" {
 		if err := vpn.CheckPrivileges(); err != nil {
 			return err
 		}
@@ -99,6 +106,29 @@ func runRun(args []string) error {
 		}
 	}
 
+	var tunDevice vpn.Device
+	if *tun {
+		var file *os.File
+		switch {
+		case *tunFD >= 0:
+			file = os.NewFile(uintptr(*tunFD), "tun")
+		case strings.TrimSpace(*tunFDSocket) != "":
+			var err error
+			file, err = receiveTunFD(*tunFDSocket)
+			if err != nil {
+				return err
+			}
+		}
+		if file != nil {
+			dev, err := vpn.DeviceFromFile(file, *tunName, *tunMTU)
+			if err != nil {
+				_ = file.Close()
+				return err
+			}
+			tunDevice = dev
+		}
+	}
+
 	// Служебный вывод: --debug включает его целиком, а --dry-run — потому что его
 	// обещанный вывод и есть системные команды. Печатается в stderr, поэтому поток
 	// stdout остаётся чистым даже в --json.
@@ -108,10 +138,17 @@ func runRun(args []string) error {
 	}
 
 	cfg, err := core.NewConfig(core.Options{
-		WarpOnly:        *warpOnly,
-		TUN:             *tun,
-		TUNName:         *tunName,
-		TUNMTU:          *tunMTU,
+		WarpOnly:  *warpOnly,
+		TUN:       *tun,
+		TUNName:   *tunName,
+		TUNMTU:    *tunMTU,
+		TUNDevice: tunDevice,
+		TUNCheckPrivileges: func() error {
+			if tunDevice != nil {
+				return nil
+			}
+			return vpn.CheckPrivileges()
+		},
 		DNS:             dnsAddrs,
 		UDP:             *udp,
 		DryRun:          *dryRun,
@@ -141,6 +178,9 @@ func runRun(args []string) error {
 		Logf:            logf,
 	})
 	if err != nil {
+		if tunDevice != nil {
+			_ = tunDevice.Close()
+		}
 		return err
 	}
 

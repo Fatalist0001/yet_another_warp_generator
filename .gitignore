@@ -47,6 +47,9 @@ coverage.out
 /warpgen-*-x86_64.AppImage
 /.appimage-build/
 
+# Android APK (debug-подпись, собирается make android-apk)
+/warpgen-*-arm64.apk
+
 # Инструменты AppImage (сторонние бинарники, скачиваются вручную)
 /appimagetool.AppImage
 /linuxdeploy.AppImage

@@ -30,6 +30,7 @@ make gui-test-live    # live-e2e GUI: сеть, настоящий CLI и SOCKS5
 make gui-analyze      # flutter analyze
 make gui-run          # запустить GUI (нужны Flutter SDK и GTK3 dev)
 make gui-build        # релизная сборка Linux-приложения
+make android-apk      # APK arm64: Go-ядро + VpnService + warp-plus внутри
 make clean            # удалить артефакты сборки
 ```
 
@@ -117,6 +118,26 @@ GOPROXY=off go test ./... -short
   `gui/build` застревает `CMAKE_INSTALL_PREFIX=/usr/local`, и шаблон больше не
   переопределяет его на `bundle/` — установка падает с `Permission denied`.
   Лечение: `rm -rf gui/build` и собрать заново.
+
+### Android (пакет `gui/android/`)
+
+- Android-версия — та же Dart-оболочка, но TUN создаёт `WarpgenVpnService`, а не
+  CLI под root. Go-ядро собирается под `android/arm64` как `libwarpgen.so` и
+  запускается отдельным процессом из `nativeLibraryDir`; fd TUN передаётся по
+  unix-сокету через `SCM_RIGHTS` (флаг `run --tun-fd-socket`).
+- `libwarpgen.so` и `libwarp-plus.so` в git не лежат (`.gitignore`): их собирает
+  `scripts/build-android.sh` (`make android-apk`). `libwarp-plus.so` — официальный
+  android-arm64 релиз warp-plus v1.2.6, нужен режиму WARP + Psiphon.
+- Приложение исключено из своего VPN (`addDisallowedApplication`): исходящие
+  сокеты Go-процесса идут напрямую, петли нет, `VpnService.protect` не нужен.
+  Адрес/маршруты/DNS задаёт VpnService, поэтому `vpn/routes_android.go` — заглушка,
+  а `vpn/privileges_android.go` не требует root.
+- `--tun` на Android включается всегда; переключатель скрыт. `dns-current` и
+  «DNS провайдера» на Android недоступны — это не ошибка, DNS задаёт VpnService.
+- APK только `arm64`, подпись debug-ключом. Сборка и установка — вручную
+  (`adb install -r`), в `make checks` не входят; эмулятор не нужен.
+- Android-код не должен протекать в Linux: `WarpgenCli.startRun` выбирает ветку
+  по `Platform.isAndroid`, `AndroidProcessRunner` — только для `run --tun`.
 
 ## Жёсткие инварианты — не ломать
 

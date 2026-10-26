@@ -230,6 +230,8 @@ curl --proxy socks5h://127.0.0.1:8086 https://ifconfig.co/json
 | `--tun` | `false` | системный туннель: весь трафик машины идёт по цепочке (нужен root) |
 | `--tun-name` | `warpgen0` | имя TUN-интерфейса |
 | `--tun-mtu` | `1400` | MTU TUN-интерфейса |
+| `--tun-fd` | `-1` | готовый fd TUN (Android/встраивание; без root) |
+| `--tun-fd-socket` | пусто | unix-сокет, по которому получить fd TUN через `SCM_RIGHTS` (Android VpnService) |
 | `--dns` | `1.1.1.1:53,8.8.8.8:53` | резолверы для DNS через цепочку (`ip[:port]` через запятую) |
 | `--udp` | `drop` | политика UDP: `drop` — отбрасывать (QUIC ломается, приложения уходят на TCP) |
 | `--dry-run` | `false` | с `--tun`: показать системные команды (в stderr) и ничего не менять |
@@ -375,7 +377,7 @@ DNS: перехватываются UDP и TCP на 53-й порт к любом
 | Платформа | Устройство пакетов | Маршруты и DNS | Права |
 |---|---|---|---|
 | Linux (сделано) | `vpn/tun_linux.go`: `tun.CreateTUN`, `tun.CreateTUNFromFile` | `vpn/routes_linux.go`: команды `ip` и `resolvectl` | root, проверка до старта |
-| Android | `vpn.DeviceFromFile` (fd отдаёт `VpnService.Builder`) → `vpn.Options.Device` | не нужен: адрес, маршруты и DNS задаёт сам VpnService; `RouteManager` — заглушка со статусом | проверки нет: `vpn.Options.CheckPrivileges` подменяется на пустую |
+| Android (сделано в APK) | `vpn.DeviceFromFile` (fd отдаёт `VpnService.Builder`) → `vpn.Options.Device` | `vpn/routes_android.go`: заглушка, адрес/маршруты/DNS задаёт VpnService; приложение исключено из VPN через `addDisallowedApplication` | проверки нет: `vpn.Options.CheckPrivileges` подменяется на пустую |
 | Windows | Wintun (`vpn/tun_windows.go`) | `vpn/routes_windows.go`: `netsh interface ipv4 add route` / `CreateIpForwardEntry`; исключение endpoint — маршрутом `/32` | администратор |
 | macOS | utun (`vpn/tun_darwin.go`) | `vpn/routes_darwin.go`: `route add` и `networksetup -setdnsservers` | root |
 
@@ -383,9 +385,10 @@ DNS: перехватываются UDP и TCP на 53-й порт к любом
 `vpn.RouteManager` (`Apply`/`SetEndpoint`/`Revert`) и `vpn.DialFunc` — мост, политика
 пакетов и выбор DNS от платформы не зависят. Для Android в `vpn.Options` уже есть
 `Device` (готовое устройство из fd) и `Protect(fd)` — на Linux он не нужен (петля
-исключена маршрутом `/32`), а на Android подменяется на `VpnService.protect`.
-Пока реализован только Linux: остальные ОС возвращают `vpn.ErrUnsupported` с
-понятным сообщением.
+исключена маршрутом `/32`), а на Android приложение целиком исключается из VPN
+через `addDisallowedApplication`, поэтому `protect` для сокетов Go-процесса тоже
+не нужен. Реализованы Linux и Android (APK); остальные ОС возвращают
+`vpn.ErrUnsupported` с понятным сообщением.
 
 ### Чек-лист e2e (позже, на свободной машине)
 
@@ -501,6 +504,48 @@ SIGKILL уходит только если процесс не вышел за 1
 Образ — x86_64, требует glibc ≥ 2.34 (Ubuntu 22.04+, Debian 12+) и FUSE
 (иначе `--appimage-extract-and-run`); аккаунт и конфиги пишутся в `~/.warpgen`.
 
+## Android (APK, arm64)
+
+В `gui/android/` лежит та же Flutter-оболочка, но TUN создаёт `VpnService`, а не
+CLI под root. `WarpgenVpnService` поднимает TUN, запускает упакованный
+`libwarpgen.so` (тот же Go-пайплайн) и передаёт ему fd по unix-сокету через
+`SCM_RIGHTS`. Приложение исключено из VPN (`addDisallowedApplication`), поэтому
+исходящие сокеты Go-процесса идут напрямую и петля «VPN → SOCKS5 → VPN» не
+возникает; остальные приложения получают трафик через TUN. В APK также лежит
+`libwarp-plus.so` (официальный android-arm64 релиз warp-plus v1.2.6), поэтому
+режим WARP + Psiphon работает без отдельной установки.
+
+```bash
+make android-apk     # собрать warpgen-0.1.0-arm64.apk
+adb devices          # телефон должен быть виден
+adb install -r warpgen-0.1.0-arm64.apk
+```
+
+Скрипт `scripts/build-android.sh` собирает Go-ядро под `android/arm64`, кладёт
+бинарники в `jniLibs` (они не в git) и вызывает Flutter. Нужны Android SDK
+(`platforms;android-36`, `build-tools;36.0.0`, `platform-tools`) и JDK 21; пути
+переопределяются через `ANDROID_SDK_ROOT`, `JAVA_HOME`, `FLUTTER`, `PUB_CACHE`,
+`GRADLE_USER_HOME`. Эмулятор не нужен.
+
+Что проверить на телефоне:
+
+1. Включить «Для разработчиков» и «Отладка по USB», подключить кабель, разрешить
+   отпечаток компьютера; `adb devices` должен показать `device`, а не
+   `unauthorized`.
+2. Установить APK, открыть «Товарищ майор», разрешить VPN и уведомления.
+3. Нажать «Подключиться», дождаться `ready` в терминале; проверить, что у другого
+   приложения (браузер) внешний IP изменился, а сайты из проверки сервисов
+   доступны.
+4. Посмотреть журнал: `adb logcat -s warpgen` (строки `stdout`/`stderr` Go-ядра).
+5. «Отключиться» должен снять VPN; повторное подключение не должно сканировать
+   endpoint'ы, пока не нажата «Пересоздать конфигурацию».
+
+Ограничения Android-версии: APK только `arm64` (большинство телефонов; x86_64
+эмулятор не собран), подпись — debug-ключом, `dns-current`/«DNS провайдера» на
+Android недоступны (DNS задаёт VpnService), а APK не проверялся на реальном
+устройстве в этом окружении — это ручной чек-лист. `--tun` в Android-версии
+включён всегда; переключатель системного туннеля скрыт.
+
 ## Структура пакетов
 
 - `registration/` — неофициальный API Cloudflare, регистрация WARP, локальное хранение аккаунта
@@ -510,7 +555,7 @@ SIGKILL уходит только если процесс не вышел за 1
 - `config/` — генератор `.conf` (WARP-safe AWG 2.0) и генераторы I1 (QUIC/DNS/SIP/STUN)
 - `chain/` — цепочка «внешний AWG-туннель → WARP → Psiphon»: запуск внешнего warp-plus и проверка SOCKS5
 - `core/` — самодостаточный пайплайн `run`: автомат состояний (endpoint → туннель → форвардер → страны → мониторинг; либо SOCKS5 поверх туннеля в `--warp-only`), UDP-форвардер, локальный SOCKS5-сервер, события
-- `vpn/` — системный туннель `--tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и их откат (Linux)
+- `vpn/` — системный туннель `--tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и их откат (Linux); Android получает fd от VpnService
 - `services/` — проверка доступности сервисов через SOCKS5 (Яндекс, VK, Госуслуги, Ozon, Wildberries; YouTube, Instagram, X, Discord, ChatGPT, Telegram, Gemini)
 - `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `dns-presets`, `dns-current`, `services`, `gen`, `chain`, `run`)
 
@@ -527,12 +572,13 @@ SIGKILL уходит только если процесс не вышел за 1
 
 | Платформа | Статус |
 |---|---|
-| Linux | Разработка и тесты |
-| Android | Портирование (Go → нативная библиотека, `-buildmode=c-shared`) |
+| Linux | Разработка и тесты (GUI AppImage) |
+| Android | APK arm64: GUI + VpnService, Go-ядро отдельным процессом из `jniLibs` |
 | Windows | Портирование |
 
 Платформенный код изолирован build tags: `tunnel/bind_linux.go`, `tunnel/bind_other.go`,
-`vpn/tun_linux.go`, `vpn/tun_other.go`, `vpn/routes_linux.go`, `vpn/routes_other.go`
+`vpn/tun_linux.go`, `vpn/tun_other.go`, `vpn/routes_linux.go`, `vpn/routes_android.go`,
+`vpn/routes_other.go`, `vpn/privileges_linux.go`, `vpn/privileges_android.go`
 (и `chain/proc_unix.go`, `chain/proc_windows.go` для управления группой процессов).
 Никаких linux-only syscall'ов вне этих файлов; root не нужен — кроме `--interface`
 и режима `run --tun`.

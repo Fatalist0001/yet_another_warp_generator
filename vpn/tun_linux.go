@@ -35,12 +35,3 @@ func DeviceFromFile(file *os.File, name string, mtu int) (Device, error) {
 	}
 	return newNativeDevice(dev, name, mtu), nil
 }
-
-// checkPrivileges — маршруты и TUN меняются только от root. На Android проверка
-// не нужна: права и маршруты задаёт VpnService.
-func checkPrivileges() error {
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("vpn: режим --tun меняет маршруты и создаёт интерфейс — запустите с правами root (sudo)")
-	}
-	return nil
-}
