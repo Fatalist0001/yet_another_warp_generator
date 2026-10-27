@@ -85,6 +85,14 @@ func runRun(args []string) error {
 		return errors.New("--tun-fd/--tun-fd-socket имеют смысл только вместе с --tun")
 	}
 
+	// Коды стран проверяем до скана endpoint'ов: неизвестный код warp-plus не
+	// примет, и узнать об этом лучше сразу, а не через минуту перебора.
+	if !*warpOnly {
+		if err := chain.ValidateCountries(codes); err != nil {
+			return err
+		}
+	}
+
 	// Права проверяем до любого сетевого действия: без root --tun должен
 	// упасть с понятным сообщением, не пытаясь резолвить DNS и не трогая
 	// аккаунт. --dry-run ничего не меняет в системе, поэтому root не нужен.
@@ -139,11 +147,11 @@ func runRun(args []string) error {
 	}
 
 	cfg, err := core.NewConfig(core.Options{
-		WarpOnly:  *warpOnly,
-		TUN:       *tun,
-		TUNName:   *tunName,
-		TUNMTU:    *tunMTU,
-		TUNDevice: tunDevice,
+		WarpOnly:    *warpOnly,
+		TUN:         *tun,
+		TUNName:     *tunName,
+		TUNMTU:      *tunMTU,
+		TUNDevice:   tunDevice,
 		TUNStateDir: *stateDir,
 		TUNCheckPrivileges: func() error {
 			if tunDevice != nil {

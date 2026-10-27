@@ -203,6 +203,7 @@ func chainOptions(opts Options) chain.Options {
 		Attempts:     opts.Attempts,
 		Strict:       opts.Strict,
 		AccountFile:  opts.AccountFile,
+		Logf:         opts.Logf,
 	}
 }
 

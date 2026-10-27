@@ -48,6 +48,11 @@ func runChain(args []string) error {
 		Attempts:     *attempts,
 		Strict:       *strict,
 		AccountFile:  *account,
+		// Причина сбоя и путь к логу warp-plus — в stderr: в самом логе могут
+		// быть служебные строки, поэтому на экран он не выводится.
+		Logf: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, format+"\n", args...)
+		},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -66,6 +71,9 @@ func runChain(args []string) error {
 
 	fmt.Printf("SOCKS5 готов: socks5://%s\n", sess.Bind)
 	fmt.Printf("  страна: %s\n", sess.Country)
+	if sess.Requested != "" && sess.Requested != sess.Country {
+		fmt.Printf("  запрошена была %s — взяли любой выход вне РФ\n", sess.Requested)
+	}
 	fmt.Printf("  IP: %s\n", sess.IP)
 	fmt.Printf("  организация: %s\n", orDash(sess.Org))
 	fmt.Printf("  подготовка: %s\n", sess.Elapsed.Round(time.Second))

@@ -10,7 +10,19 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Fatalist0001/yet_another_warp_generator/registration"
 )
+
+// writeAccountFile сохраняет тестовый аккаунт warpgen и возвращает путь к нему.
+func writeAccountFile(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "warpgen-account.json")
+	if err := registration.SaveAccount(path, testAccount()); err != nil {
+		t.Fatalf("сохранение аккаунта: %v", err)
+	}
+	return path
+}
 
 // Каталог кэша по умолчанию — абсолютный путь в домашнем каталоге: относительный
 // создавал бы root-овый каталог в репозитории при запуске `sudo ./warpgen run`
@@ -35,7 +47,7 @@ func TestDefaultCacheDirLivesInHome(t *testing.T) {
 func TestRunCountriesStopsOnFirstSuccess(t *testing.T) {
 	opts := Options{Countries: []string{"NL", "DE"}, Attempts: 2}
 	calls := 0
-	try := func(_ context.Context, cc string) (*Session, *attemptFailure) {
+	try := func(_ context.Context, _ Options, cc string) (*Session, *attemptFailure) {
 		calls++
 		if calls < 3 {
 			return nil, &attemptFailure{Reason: "нет хендшейка WARP"}
@@ -59,7 +71,7 @@ func TestRunCountriesStopsOnFirstSuccess(t *testing.T) {
 
 func TestRunCountriesCollectsAllAttempts(t *testing.T) {
 	opts := Options{Countries: []string{"NL", "FI"}, Attempts: 2}
-	try := func(context.Context, string) (*Session, *attemptFailure) {
+	try := func(context.Context, Options, string) (*Session, *attemptFailure) {
 		return nil, &attemptFailure{Reason: "Psiphon не построил туннель"}
 	}
 	_, err := runCountries(context.Background(), opts, try)
@@ -76,7 +88,7 @@ func TestRunCountriesHonorsContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	opts := Options{Countries: []string{"NL"}, Attempts: 2}
-	try := func(context.Context, string) (*Session, *attemptFailure) {
+	try := func(context.Context, Options, string) (*Session, *attemptFailure) {
 		t.Error("попытка не должна запускаться после отмены контекста")
 		return nil, &attemptFailure{Reason: "x"}
 	}
@@ -119,14 +131,188 @@ func TestClassifyLog(t *testing.T) {
 }
 
 func TestReadinessReason(t *testing.T) {
-	if got := readinessReason(errExitRU, ""); got != "не та страна (выход RU)" {
+	if got := readinessReason(&wrongExit{err: errExitRU, got: "RU"}, ""); got != "не та страна (выход RU)" {
 		t.Errorf("errExitRU → %q", got)
 	}
-	if got := readinessReason(errWrongCountry, ""); got != "не та страна" {
+	if got := readinessReason(&wrongExit{err: errWrongCountry, got: "FR"}, ""); got != "не та страна: выход FR" {
 		t.Errorf("errWrongCountry → %q", got)
+	}
+	if got := readinessReason(&wrongExit{err: errNoGeoService}, ""); got != "геосервисы не ответили — выход не проверен" {
+		t.Errorf("errNoGeoService → %q", got)
 	}
 	if got := readinessReason(errors.New("x"), "waiting on handshake"); got != "нет хендшейка WARP" {
 		t.Errorf("прочая ошибка → %q", got)
+	}
+}
+
+// Ошибка проверки выхода не должна теряться: иначе несовпадение страны выглядит
+// как поломка туннеля, и мягкий добор стран никогда не включается.
+func TestExitCauseKeepsVerdict(t *testing.T) {
+	if exitCause(nil, nil, true) != nil {
+		t.Error("без ошибки причина не нужна")
+	}
+	results := []GeoResult{{Service: "ifconfig.co", IP: "1.2.3.4", Country: "FR"}}
+	cause := exitCause(errWrongCountry, results, true)
+	if cause == nil || !errors.Is(cause, errWrongCountry) || cause.got != "FR" {
+		t.Fatalf("exitCause = %#v", cause)
+	}
+	// Прокси слушает, а геосервисы молчат — это вердикт «выход не проверен».
+	if got := exitCause(errNoGeoService, nil, true); got == nil || !errors.Is(got, errNoGeoService) || got.got != "" {
+		t.Errorf("молчание геосервисов при живом прокси → %#v", got)
+	}
+	// Прокси не слушает — это ещё не повод, причину даст лог warp-plus.
+	if got := exitCause(errNoGeoService, nil, false); got != nil {
+		t.Errorf("SOCKS5 не поднялся — вердикта быть не должно: %#v", got)
+	}
+	if got := exitCause(errors.New("timeout"), results, true); got != nil {
+		t.Errorf("посторонняя ошибка не должна превращаться в вердикт: %#v", got)
+	}
+}
+
+// Мягкий добор: сначала страны по строгому критерию, потом те же страны с
+// критерием «любой выход вне РФ». Таблица попыток при этом не теряется.
+func TestRunWithFallbackAcceptsForeignExit(t *testing.T) {
+	opts := Options{Countries: []string{"NL"}, Attempts: 1, Strict: true}
+	calls := 0
+	try := func(_ context.Context, o Options, cc string) (*Session, *attemptFailure) {
+		calls++
+		if o.Strict {
+			return nil, &attemptFailure{
+				Reason:      "не та страна: выход FR",
+				Err:         &wrongExit{err: errWrongCountry, got: "FR"},
+				Established: true,
+				Country:     "FR",
+			}
+		}
+		return &Session{Country: cc, IP: "1.2.3.4", Bind: "127.0.0.1:1"}, nil
+	}
+	sess, err := runWithFallback(context.Background(), opts, try)
+	if err != nil {
+		t.Fatalf("runWithFallback: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("попыток = %d, ожидали 2 (строгая и мягкая)", calls)
+	}
+	if len(sess.Attempts) != 1 || !sess.Attempts[0].Established {
+		t.Errorf("отчёт попыток потерян: %+v", sess.Attempts)
+	}
+}
+
+// Без поднявшегося Psiphon мягкий добор бессмысленен: он только удлинил бы
+// ожидание.
+func TestRunWithFallbackSkipsWhenPsiphonNeverUp(t *testing.T) {
+	opts := Options{Countries: []string{"NL"}, Attempts: 1, Strict: true}
+	calls := 0
+	try := func(context.Context, Options, string) (*Session, *attemptFailure) {
+		calls++
+		return nil, &attemptFailure{Reason: "Psiphon не построил туннель"}
+	}
+	if _, err := runWithFallback(context.Background(), opts, try); err == nil {
+		t.Fatal("ожидали ошибку")
+	}
+	if calls != 1 {
+		t.Errorf("попыток = %d, ожидали одну", calls)
+	}
+}
+
+// Выход RU мягким критерием не лечится: второй проход только удлинил бы ожидание.
+func TestRunWithFallbackSkipsOnRUExit(t *testing.T) {
+	opts := Options{Countries: []string{"NL"}, Attempts: 1, Strict: true}
+	calls := 0
+	try := func(context.Context, Options, string) (*Session, *attemptFailure) {
+		calls++
+		return nil, &attemptFailure{
+			Reason:  "не та страна (выход RU)",
+			Err:     &wrongExit{err: errExitRU, got: "RU"},
+			Country: "RU",
+		}
+	}
+	if _, err := runWithFallback(context.Background(), opts, try); err == nil {
+		t.Fatal("ожидали ошибку")
+	}
+	if calls != 1 {
+		t.Errorf("попыток = %d, ожидали одну", calls)
+	}
+}
+
+func TestPsiphonNotices(t *testing.T) {
+	log := strings.Join([]string{
+		`time=1 level=INFO msg="psiphon mode enabled" country=NL`,
+		`time=2 level=DEBUG msg="psiphon core notice" type=ConnectingServer data=map[]`,
+		`time=3 level=DEBUG msg="psiphon core notice" type=ConnectingServer data=map[]`,
+		`time=4 level=DEBUG msg="psiphon core notice" type=EstablishTunnelTimeout data=map[]`,
+	}, "\n")
+	got := psiphonNotices(log, 3)
+	want := []string{"ConnectingServer", "EstablishTunnelTimeout"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("psiphonNotices = %v, ожидали %v", got, want)
+	}
+	if got := psiphonNotices(log, 1); len(got) != 1 || got[0] != "EstablishTunnelTimeout" {
+		t.Errorf("с лимитом 1 = %v", got)
+	}
+	if got := psiphonNotices("нет notice'ов", 3); len(got) != 0 {
+		t.Errorf("без notice'ов = %v", got)
+	}
+}
+
+func TestDescribeFailure(t *testing.T) {
+	logWithNotices := `level=DEBUG msg="psiphon core notice" type=Tunnels data=map[]`
+	got := describeFailure(errors.New("готовность не достигнута"), logWithNotices)
+	if !strings.Contains(got, "Tunnels") {
+		t.Errorf("к причине не добавлены notice'ы: %q", got)
+	}
+	// Вердикт проверки выхода точнее лога — notice'ы к нему не примешиваем.
+	if got := describeFailure(&wrongExit{err: errWrongCountry, got: "FR"}, logWithNotices); got != "не та страна: выход FR" {
+		t.Errorf("вердикт страны изменён: %q", got)
+	}
+}
+
+// Сброс перед повтором: кэш Psiphon удаляется, identity warp-plus остаётся — без
+// неё warp-plus уйдёт в регистрацию, которой из РФ может не быть.
+func TestResetPsiphonStateKeepsIdentity(t *testing.T) {
+	dir := t.TempDir()
+	if err := EnsureIdentity(dir, writeAccountFile(t, dir)); err != nil {
+		t.Fatalf("EnsureIdentity: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "server_list_compressed"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "psiphon"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := resetPsiphonState(dir); err != nil {
+		t.Fatalf("resetPsiphonState: %v", err)
+	}
+	if _, err := os.Stat(IdentityPath(dir)); err != nil {
+		t.Errorf("identity должна остаться: %v", err)
+	}
+	for _, name := range []string{"server_list_compressed", "psiphon"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s должно быть удалено (err=%v)", name, err)
+		}
+	}
+	// Отсутствующий каталог — не ошибка.
+	if err := resetPsiphonState(filepath.Join(dir, "нет-такого")); err != nil {
+		t.Errorf("нет каталога → %v", err)
+	}
+}
+
+// Неизвестный код страны warp-plus не примет: его --country — enum, и процесс
+// падает до сети. Проверяем это сами, чтобы причина была понятной.
+func TestCheckCountriesRejectsUnknown(t *testing.T) {
+	if err := checkCountries(Options{Countries: DefaultCountries}); err != nil {
+		t.Errorf("страны по умолчанию должны проходить: %v", err)
+	}
+	err := checkCountries(Options{Countries: []string{"NL", "ru"}})
+	if err == nil || !strings.Contains(err.Error(), "RU") {
+		t.Fatalf("ожидали отказ по RU, получили %v", err)
+	}
+	if !strings.Contains(err.Error(), "NL") {
+		t.Errorf("в сообщении должен быть список допустимых стран: %v", err)
+	}
+	if err := checkCountries(Options{}); err == nil {
+		t.Error("пустой список должен отвергаться")
 	}
 }
 
