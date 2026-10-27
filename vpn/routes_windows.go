@@ -210,8 +210,11 @@ func (w *windowsRoutes) apply(ctx context.Context, rec *record, plan Plan) error
 	// IPv6 уводим в TUN, где мост его отбрасывает: иначе трафик уйдёт мимо
 	// туннеля. Отказ не валит туннель, но превращается в предупреждение.
 	if ipv6Ready {
+		// Как и с /32 endpoint'а: ::/0 может остаться от оборванного прошлого
+		// запуска, и New-NetRoute упал бы на дубликате.
 		ipv6 := psCmd(fmt.Sprintf(
-			"New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex %d -NextHop '::' -RouteMetric 1 -PolicyStore ActiveStore -AddressFamily IPv6 -ErrorAction Stop | Out-Null", index))
+			"Remove-NetRoute -DestinationPrefix '::/0' -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; "+
+				"New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex %d -NextHop '::' -RouteMetric 1 -PolicyStore ActiveStore -AddressFamily IPv6 -ErrorAction Stop | Out-Null", index))
 		ipv6Inverse := psCleanup(fmt.Sprintf(
 			"Remove-NetRoute -DestinationPrefix '::/0' -InterfaceIndex %d -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null", index))
 		if err := rec.do(ctx, ipv6, ipv6Inverse); err != nil {
@@ -243,10 +246,23 @@ func (w *windowsRoutes) tunIndexRead(ctx context.Context, rec *record, tun strin
 }
 
 // addEndpoint ставит маршрут /32 внешнего endpoint через физический шлюз.
+//
+// Перед добавлением уже существующий маршрут на этот префикс снимается
+// (SilentlyContinue): иначе остаток от оборванного прошлого запуска валит
+// подъём туннеля с «Instance MSFT_NetRoute already exists» — как на реальной
+// машине, где очистка прежнего запуска не дошла до маршрутов. Смешанная
+// команда честно завершается: выход определяет New-NetRoute с -ErrorAction
+// Stop, снятие молчит и на пустой системе ошибкой не считается.
 func (w *windowsRoutes) addEndpoint(ctx context.Context, rec *record, ip netip.Addr) error {
 	prefix := ip.String() + "/32"
+	// Снимаем любой существующий маршрут на этот префикс — независимо от
+	// интерфейса и шлюза: остаток от оборванного прошлого запуска мог остаться
+	// на другом шлюзе, и New-NetRoute падал бы с «Instance already exists»
+	// (или тихо чёрнил бы трафик в мёртвый шлюз).
 	argv := psCmd(fmt.Sprintf(
-		"New-NetRoute -DestinationPrefix %s -InterfaceIndex %d -NextHop %s -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null",
+		"Remove-NetRoute -DestinationPrefix %s -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; "+
+			"New-NetRoute -DestinationPrefix %s -InterfaceIndex %d -NextHop %s -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null",
+		psQuote(prefix),
 		psQuote(prefix), w.phys.InterfaceIndex, psQuote(w.nexthop())))
 	inverse := psCleanup(fmt.Sprintf(
 		"Remove-NetRoute -DestinationPrefix %s -InterfaceIndex %d -NextHop %s -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null",

@@ -240,6 +240,52 @@ func TestWindowsIPv6FailureIsWarning(t *testing.T) {
 	}
 }
 
+// Добавление маршрутов идемпотентно: остаток от оборванного прошлого запуска
+// снимается до New-NetRoute. Иначе подъём туннеля падал с реальной ошибкой
+// «Instance MSFT_NetRoute already exists» — маршруты живут в ActiveStore до
+// перезагрузки, и убитый процесс оставлял их после себя.
+func TestWindowsRoutesClearExisting(t *testing.T) {
+	exec := newFakeWinExecutor()
+	rm, err := newRouteManager(Options{Executor: exec, StateDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newRouteManager: %v", err)
+	}
+	if _, err := rm.Apply(context.Background(), winPlan()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	for _, prefix := range []string{"'162.159.192.1/32'", "'::/0'"} {
+		var cmd string
+		for _, argv := range exec.executed() {
+			s := strings.Join(argv, " ")
+			if strings.Contains(s, "New-NetRoute -DestinationPrefix "+prefix) {
+				cmd = s
+				break
+			}
+		}
+		if cmd == "" {
+			t.Errorf("нет команды New-NetRoute для %s", prefix)
+			continue
+		}
+		// Снятие — только по префиксу (без -InterfaceIndex/-NextHop): маршрут
+		// прошлого запуска мог остаться на другом шлюзе или интерфейсе.
+		remove := "Remove-NetRoute -DestinationPrefix " + prefix + " -PolicyStore ActiveStore"
+		i, j := strings.Index(cmd, remove), strings.Index(cmd, "New-NetRoute")
+		if i < 0 {
+			t.Errorf("%s не снимается перед добавлением:\n%s", prefix, cmd)
+			continue
+		}
+		if i > j {
+			t.Errorf("%s: снятие идёт после добавления:\n%s", prefix, cmd)
+		}
+	}
+
+	// Смешанная команда обязана содержать -ErrorAction Stop, а чистая
+	// best-effort — заканчиваться `; exit 0`: по этому коду powershell.exe
+	// честно возвращает выход (проверено экспериментально).
+	assertCleanupExitsZero(t, exec)
+}
+
 // Ошибка на критическом шаге откатывает уже применённое и не оставляет журнал.
 func TestWindowsApplyRollsBack(t *testing.T) {
 	exec := newFakeWinExecutor()
