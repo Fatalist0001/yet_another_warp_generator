@@ -156,6 +156,20 @@ GOPROXY=off go test ./... -short
   доставить SIGINT дочернему процессу (`Process.kill` = `TerminateProcess`).
   Поэтому `WarpgenCli.softStopByFile` включён на Windows, а обёртка —
   `StopFileRunningProcess` (без дублирующего сигнала); SIGKILL — по таймауту.
+- Окно живёт в трее: крестик лишь скрывает окно (`WM_CLOSE` в
+  `gui/windows/runner/flutter_window.cc`), туннель продолжает работать, а иконка
+  (`tray_icon.cc`, `Shell_NotifyIcon`) даёт меню «Открыть» / «Остановить
+  туннель» / «Выход». Раньше окно скрывалось без иконки: процесс с системным
+  туннелем становился невидимым, а повторный запуск exe поднимал второй
+  `warpgen run --tun` на том же `warpgen0` и ломал маршруты — машина оставалась
+  без сети.
+- Второй экземпляр не запускается: `main.cpp` берёт мьютекс
+  `Local\WarpgenGui.single-instance`, находит окно по классу
+  `Win32Window::kWindowClassName` и посылает `WarpgenGuiRestoreWindow`, после
+  чего сразу выходит — без окна, движка и дочерних процессов. «Выход» в трее
+  сначала останавливает туннель (`TrayChannel` → `TunnelController.stop()`),
+  потом просит runner закрыть окно (`quit`); `exit(0)` не использовать, иначе
+  маршруты и дочерний CLI переживут GUI.
 - `dns-current` работает: `vpn.ReadCurrentDNS` читает серверы интерфейса
   маршрута по умолчанию через PowerShell, поэтому пресет «DNS провайдера» доступен.
   Домашний каталог берётся из `USERPROFILE`.

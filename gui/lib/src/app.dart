@@ -16,6 +16,7 @@ import 'pages/setup_page.dart';
 import 'pages/tunnel_page.dart';
 import 'platform/app_paths.dart';
 import 'platform/process_runner.dart';
+import 'platform/tray_channel.dart';
 import 'platform/warpgen_locator.dart';
 import 'services/settings_store.dart';
 import 'services/warpgen_cli.dart';
@@ -144,6 +145,10 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
   SettingsController? _settings;
   ServicesController? _services;
   bool _wasLive = false;
+  late final TrayChannel _trayChannel;
+
+  /// Выход из трея уже начат: повторный клик не должен останавливать дважды.
+  bool _quitting = false;
 
   String get _homeDir => homeDirectory(widget.environment);
 
@@ -154,6 +159,15 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _trayChannel = TrayChannel();
+    _trayChannel.setupTrayHandlers(
+      // «Остановить туннель» в трее: окно остаётся открытым, поэтому нужен
+      // обычный stop() со статусом, а не shutdown() для умирающего окна.
+      onStop: () async {
+        await _tunnel?.stop();
+      },
+      onQuit: _quitFromTray,
+    );
     unawaited(_bootstrap());
   }
 
@@ -167,8 +181,22 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _trayChannel.dispose();
     _disposeControllers();
     super.dispose();
+  }
+
+  /// «Выход» в меню трея: сначала снимаем туннель, только потом закрываем
+  /// процесс. Иначе остались бы применённые маршруты и дочерний CLI, и
+  /// следующее подключение ломалось бы на конфликте маршрутов.
+  Future<void> _quitFromTray() async {
+    if (_quitting) return;
+    _quitting = true;
+    try {
+      await _tunnel?.stop();
+    } finally {
+      await _trayChannel.quit();
+    }
   }
 
   void _disposeControllers() {

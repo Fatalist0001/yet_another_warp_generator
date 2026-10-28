@@ -52,6 +52,11 @@ class Win32Window {
   // If true, closing this window will quit the application.
   void SetQuitOnClose(bool quit_on_close);
 
+  // Имя класса окна. По нему второй запуск находит уже работающее окно и
+  // просит показать его, вместо того чтобы поднимать второй туннель.
+  static constexpr const wchar_t kWindowClassName[] =
+      L"FLUTTER_RUNNER_WIN32_WINDOW";
+
   // Return a RECT representing the bounds of the current client area.
   RECT GetClientArea();
 

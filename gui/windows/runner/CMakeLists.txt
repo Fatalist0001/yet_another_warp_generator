@@ -9,6 +9,7 @@ project(runner LANGUAGES CXX)
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "main.cpp"
+  "tray_icon.cc"
   "utils.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
@@ -38,6 +39,8 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
+# Иконка в трее: Shell_NotifyIconW живёт в shell32.
+target_link_libraries(${BINARY_NAME} PRIVATE "shell32.lib")
 
 # Системный туннель создаёт Wintun-адаптер и меняет маршруты, поэтому GUI
 # целиком запускается с правами администратора, а warpgen.exe их наследует.
