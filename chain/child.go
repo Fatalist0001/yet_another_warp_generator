@@ -24,6 +24,9 @@ type child struct {
 	logFile *os.File
 	done    chan struct{}
 	waitErr error
+	// releaseJob — Windows: закрыть job object с KILL_ON_JOB_CLOSE, чтобы дочерний
+	// процесс не пережил warpgen (nil на Unix и когда job недоступен).
+	releaseJob func()
 }
 
 // startChild запускает дочерний процесс, направляя stdout/stderr в лог-файл
@@ -44,6 +47,7 @@ func startChild(bin string, args []string, logPath string) (*child, error) {
 		return nil, err
 	}
 	c := &child{cmd: cmd, logPath: logPath, logFile: f, done: make(chan struct{})}
+	c.releaseJob = attachChildJob(cmd)
 	go func() {
 		c.waitErr = cmd.Wait()
 		close(c.done)
@@ -72,6 +76,11 @@ func (c *child) log() string {
 
 // Stop корректно завершает процесс (всю группу) и ждёт выхода.
 func (c *child) Stop() error {
+	// Job закрывается после остановки: если warpgen убьют жёстко и до Stop дело
+	// не дойдёт, handle закроет сама ОС — и warp-plus будет завершён вместе с ним.
+	if c.releaseJob != nil {
+		defer c.releaseJob()
+	}
 	if c.logFile != nil {
 		defer c.logFile.Close()
 	}

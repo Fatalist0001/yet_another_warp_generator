@@ -349,3 +349,151 @@ func TestParsePSDNS(t *testing.T) {
 		}
 	}
 }
+
+// Адреса из подсети TUN никогда не возвращаются при откате: они наши
+// собственные, и вернуть их — значит оставить машину без DNS до тех пор, пока
+// кто-нибудь не сбросит настройку руками (реальный случай: на аплинке остался
+// 198.18.0.2, и без VPN не резолвилось вообще ничего).
+func TestWindowsRestoreDNSIgnoresTunSubnet(t *testing.T) {
+	onlyOurs := restoreDNS(psDNS{InterfaceAlias: "Ethernet 2", InterfaceIndex: 9,
+		ServerAddresses: []string{"198.18.0.2"}})
+	if !strings.Contains(onlyOurs, "-InterfaceIndex 9 -ResetServerAddresses") {
+		t.Errorf("свой единственный сервер должен сбрасываться на DHCP: %s", onlyOurs)
+	}
+	if strings.Contains(onlyOurs, "198.18.0.2") {
+		t.Errorf("адрес TUN попал в откат: %s", onlyOurs)
+	}
+
+	mixed := restoreDNS(psDNS{InterfaceAlias: "Ethernet 2", InterfaceIndex: 9,
+		ServerAddresses: []string{"198.18.0.2", "8.8.8.8"}})
+	if !strings.Contains(mixed, "-ServerAddresses '8.8.8.8'") || strings.Contains(mixed, "198.18.0.2") {
+		t.Errorf("должен вернуться только провайдерский сервер: %s", mixed)
+	}
+}
+
+// Оставшийся от прошлого запуска DNS снимается до применения новых настроек,
+// иначе applyDNS запомнил бы его как «прежний» и откат закрепил бы поломку.
+func TestWindowsApplyCleansStaleDNS(t *testing.T) {
+	exec := newFakeWinExecutor()
+	exec.outputs["Get-DnsClientServerAddress"] = `[` +
+		`{"InterfaceAlias":"Ethernet 2","InterfaceIndex":9,"ServerAddresses":["198.18.0.2"]},` +
+		`{"InterfaceAlias":"gen","InterfaceIndex":33,"ServerAddresses":["1.1.1.1"]}]`
+	dir := t.TempDir()
+	rm, err := newRouteManager(Options{Executor: exec, StateDir: dir})
+	if err != nil {
+		t.Fatalf("newRouteManager: %v", err)
+	}
+
+	if _, err := rm.Apply(context.Background(), winPlan()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	out := exec.joined()
+	cleanup := strings.Index(out, "Set-DnsClientServerAddress -InterfaceIndex 9 -ResetServerAddresses")
+	applied := strings.Index(out, "New-NetIPAddress -InterfaceAlias 'warpgen0'")
+	if cleanup < 0 {
+		t.Fatalf("оставшийся DNS TUN не снят:\n%s", out)
+	}
+	if applied < 0 || cleanup > applied {
+		t.Errorf("очистка должна идти до применения маршрутов:\n%s", out)
+	}
+
+	exec.mu.Lock()
+	exec.runs = nil
+	exec.mu.Unlock()
+	if err := rm.Revert(context.Background()); err != nil {
+		t.Fatalf("Revert: %v", err)
+	}
+	reverted := exec.joined()
+	if strings.Contains(reverted, "-ServerAddresses '198.18.0.2'") {
+		t.Errorf("откат вернул адрес TUN:\n%s", reverted)
+	}
+	if !strings.Contains(reverted, "Set-DnsClientServerAddress -InterfaceIndex 9 -ResetServerAddresses") {
+		t.Errorf("откат не вернул интерфейс на DHCP:\n%s", reverted)
+	}
+}
+
+// Журнал прошлого запуска откатывается при старте: иначе его шаги теряются
+// (новый журнал перезапишет файл), а применённые настройки останутся.
+func TestWindowsApplyRevertsPreviousJournal(t *testing.T) {
+	exec := newFakeWinExecutor()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "warpgen0.st")
+	inverse := psCleanup("Set-DnsClientServerAddress -InterfaceIndex 9 -ResetServerAddresses -ErrorAction SilentlyContinue")
+	if err := saveState(path, []step{{argv: psCmd("Write-Output old"), inverse: inverse}}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	rm, err := newRouteManager(Options{Executor: exec, StateDir: dir})
+	if err != nil {
+		t.Fatalf("newRouteManager: %v", err)
+	}
+	if _, err := rm.Apply(context.Background(), winPlan()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	out := exec.joined()
+	reverted := strings.Index(out, strings.Join(inverse, " "))
+	applied := strings.Index(out, "New-NetIPAddress -InterfaceAlias 'warpgen0'")
+	if reverted < 0 {
+		t.Fatalf("журнал прошлого запуска не откачен:\n%s", out)
+	}
+	if applied < 0 || reverted > applied {
+		t.Errorf("откат прошлого журнала должен идти до применения:\n%s", out)
+	}
+
+	// Новый журнал содержит только новые шаги.
+	steps, err := loadState(path)
+	if err != nil {
+		t.Fatalf("loadState: %v", err)
+	}
+	for _, s := range steps {
+		if strings.Contains(strings.Join(s.argv, " "), "Write-Output old") {
+			t.Error("в журнале остался шаг прошлого запуска")
+		}
+	}
+}
+
+// --force снимает остатки без журнала: DNS из подсети TUN и маршруты
+// warpgen-адаптера.
+func TestWindowsForceRevertWithoutJournal(t *testing.T) {
+	exec := newFakeWinExecutor()
+	exec.outputs["Get-DnsClientServerAddress"] = `[` +
+		`{"InterfaceAlias":"Ethernet 2","InterfaceIndex":9,"ServerAddresses":["198.18.0.2"]},` +
+		`{"InterfaceAlias":"gen","InterfaceIndex":33,"ServerAddresses":["1.1.1.1"]}]`
+	exec.outputs["InterfaceAlias -like 'warpgen*'"] = `[` +
+		`{"DestinationPrefix":"0.0.0.0/1","InterfaceIndex":47},` +
+		`{"DestinationPrefix":"::/0","InterfaceIndex":47}]`
+	dir := t.TempDir()
+
+	// Без --force и без журнала откат по-прежнему отказывается работать.
+	if _, err := RevertTunState(context.Background(), Options{Executor: exec, StateDir: dir}); err == nil ||
+		!strings.Contains(err.Error(), "--force") {
+		t.Errorf("без журнала ожидали подсказку про --force, получили: %v", err)
+	}
+
+	n, err := RevertTunState(context.Background(), Options{Executor: exec, StateDir: dir, Force: true})
+	if err != nil {
+		t.Fatalf("RevertTunState --force: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("шагов = %d, ожидали 3 (DNS + два маршрута)", n)
+	}
+	out := exec.joined()
+	for _, want := range []string{
+		"Set-DnsClientServerAddress -InterfaceIndex 9 -ResetServerAddresses",
+		"Remove-NetRoute -DestinationPrefix '0.0.0.0/1' -InterfaceIndex 47",
+		"Remove-NetRoute -DestinationPrefix '::/0' -InterfaceIndex 47",
+		"Clear-DnsClientCache",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("нет команды %q\n---\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "ServerAddresses '198.18.0.2'") {
+		t.Errorf("--force вернул адрес TUN:\n%s", out)
+	}
+	if strings.Contains(out, "InterfaceIndex 33") {
+		t.Errorf("--force тронул чужой интерфейс:\n%s", out)
+	}
+	assertCleanupExitsZero(t, exec)
+}

@@ -11,11 +11,27 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"net/netip"
 )
+
+// platformStateDir — журнал отката на Windows живёт в профиле пользователя
+// (%LOCALAPPDATA%), а не рядом с exe. Портативную папку распаковывают в новое
+// место, переносят и удаляют: журнал, оставшийся в ней, терялся вместе с ней, и
+// откатывать применённые маршруты и DNS было нечем.
+func platformStateDir() string {
+	if dir := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); dir != "" {
+		return filepath.Join(dir, "warpgen", "state")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".warpgen", "state")
+	}
+	return filepath.Join(home, ".warpgen", "state")
+}
 
 // newRouteManager — RouteManager для Windows: маршруты, адрес TUN и DNS через
 // командлеты PowerShell (модуль NetTCPIP). netsh и route.exe печатают сообщения
@@ -85,6 +101,15 @@ func (w *windowsRoutes) Apply(ctx context.Context, plan Plan) (ApplyResult, erro
 			return ApplyResult{}, err
 		}
 		rec.stateFile = path
+		// Журнал прошлого запуска: снимаем его до новых изменений. Иначе
+		// остатки (прежде всего DNS на физическом интерфейсе) просто
+		// перезаписывались бы новым журналом и оставались в системе навсегда.
+		w.revertStale(ctx, path, rec)
+		// Свой DNS мог остаться и вообще без журнала — если папку программы
+		// перенесли или журнал удалили. Снимаем по признаку: адрес из подсети TUN.
+		w.cleanStaleDNS(ctx, rec, plan.TUNName)
+	} else {
+		rec.log("dry-run: журнал прошлого запуска и остатки DNS не трогаем")
 	}
 	if err := w.apply(ctx, rec, plan); err != nil {
 		if rerr := rec.revert(ctx); rerr != nil {
@@ -387,16 +412,91 @@ func parsePSDNS(out string) ([]psDNS, error) {
 
 // restoreDNS — команда отмены: вернуть прежние серверы интерфейса или снять
 // настройку, если их не было.
+//
+// Адреса из подсети TUN отбрасываются: это наши собственные серверы. Вернуть
+// их — значит закрепить поломку (TUN снимут, а DNS останется указывать в
+// пустоту, и без VPN не будет резолвиться вообще ничего). Если других серверов
+// не было, интерфейс отдаётся DHCP.
 func restoreDNS(iface psDNS) string {
-	if len(iface.ServerAddresses) == 0 {
+	servers := foreignDNS(iface.ServerAddresses)
+	if len(servers) == 0 {
 		return fmt.Sprintf("Set-DnsClientServerAddress -InterfaceIndex %d -ResetServerAddresses -ErrorAction SilentlyContinue; exit 0", iface.InterfaceIndex)
 	}
-	quoted := make([]string, len(iface.ServerAddresses))
-	for i, s := range iface.ServerAddresses {
+	quoted := make([]string, len(servers))
+	for i, s := range servers {
 		quoted[i] = psQuote(s)
 	}
 	return fmt.Sprintf("Set-DnsClientServerAddress -InterfaceIndex %d -ServerAddresses %s -ErrorAction Stop",
 		iface.InterfaceIndex, strings.Join(quoted, ","))
+}
+
+// dnsSetCommand — команда «поставить эти серверы», а при пустом списке — вернуть
+// интерфейс на DHCP.
+func dnsSetCommand(index int, servers []string) []string {
+	if len(servers) == 0 {
+		return psCleanup(fmt.Sprintf(
+			"Set-DnsClientServerAddress -InterfaceIndex %d -ResetServerAddresses -ErrorAction SilentlyContinue", index))
+	}
+	quoted := make([]string, len(servers))
+	for i, s := range servers {
+		quoted[i] = psQuote(s)
+	}
+	return psCmd(fmt.Sprintf("Set-DnsClientServerAddress -InterfaceIndex %d -ServerAddresses %s -ErrorAction Stop",
+		index, strings.Join(quoted, ",")))
+}
+
+// revertStale снимает настройки прошлого запуска по оставшемуся журналу. Ошибки
+// не валят подъём туннеля: это страховка, а не обязательный шаг.
+func (w *windowsRoutes) revertStale(ctx context.Context, path string, rec *record) {
+	steps, err := loadState(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			msg := fmt.Sprintf("журнал прошлого запуска %s не прочитан: %v", path, err)
+			rec.warn(msg)
+			rec.log("%s", msg)
+		}
+		return
+	}
+	if len(steps) == 0 {
+		return
+	}
+	prev := &record{exec: w.exec, logf: w.logf, stateFile: path, steps: steps}
+	if err := prev.revert(ctx); err != nil {
+		msg := fmt.Sprintf("откат прошлого запуска по журналу %s: %v", path, err)
+		rec.warn(msg)
+		rec.log("%s", msg)
+		return
+	}
+	rec.log("сняты настройки прошлого запуска по журналу %s (%d шагов)", path, len(steps))
+}
+
+// cleanStaleDNS снимает с физических интерфейсов серверы из подсети TUN.
+//
+// Без этого отравление самовоспроизводится: applyDNS запоминает текущие серверы
+// интерфейса, и если там уже стоит наш адрес, откат вернёт именно его.
+func (w *windowsRoutes) cleanStaleDNS(ctx context.Context, rec *record, tun string) {
+	interfaces, err := w.dnsInterfaces(ctx, rec, tun)
+	if err != nil {
+		msg := "не удалось проверить DNS интерфейсов на остатки прошлого запуска: " + err.Error()
+		rec.warn(msg)
+		rec.log("%s", msg)
+		return
+	}
+	for _, iface := range interfaces {
+		kept := foreignDNS(iface.ServerAddresses)
+		if len(kept) == len(iface.ServerAddresses) {
+			continue
+		}
+		argv := dnsSetCommand(iface.InterfaceIndex, kept)
+		if err := w.exec.Run(ctx, argv[0], argv[1:]...); err != nil {
+			msg := fmt.Sprintf("не удалось снять оставшийся DNS TUN с интерфейса %s: %v", iface.InterfaceAlias, err)
+			rec.warn(msg)
+			rec.log("%s", msg)
+			continue
+		}
+		rec.log("снят оставшийся от прошлого запуска DNS TUN на интерфейсе %s (%s)",
+			iface.InterfaceAlias, strings.Join(iface.ServerAddresses, ", "))
+	}
 }
 
 // RevertTunState — аварийный откат по файлу состояния (команда `tun-revert`).
@@ -413,11 +513,17 @@ func RevertTunState(ctx context.Context, opts Options) (int, error) {
 	steps, err := loadState(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return 0, fmt.Errorf("vpn: файла состояния нет (%s): туннель не запускался либо откат уже сделан", path)
+			if opts.Force {
+				return forceRevertTun(ctx, opts)
+			}
+			return 0, fmt.Errorf("vpn: файла состояния нет (%s): туннель не запускался либо откат уже сделан; снять остатки без журнала — --force", path)
 		}
 		return 0, err
 	}
 	if len(steps) == 0 {
+		if opts.Force {
+			return forceRevertTun(ctx, opts)
+		}
 		return 0, fmt.Errorf("vpn: в файле состояния %s нет шагов — откатывать нечего", path)
 	}
 	exec := opts.Executor
@@ -432,6 +538,92 @@ func RevertTunState(ctx context.Context, opts Options) (int, error) {
 		steps:     steps,
 	}
 	return len(steps), rec.revert(ctx)
+}
+
+// psRoute — маршрут warpgen-адаптера, который надо снять.
+type psRoute struct {
+	DestinationPrefix string
+	InterfaceIndex    int
+}
+
+// forceRevertTun — откат без журнала: снимаем только то, что можно уверенно
+// опознать как своё, — DNS из подсети TUN на интерфейсах и маршруты через
+// warpgen-адаптер. Чужие маршруты и чужие DNS остаются на месте.
+//
+// Нужен, когда журнала нет: портативную папку перенесли или удалили, журнал
+// потерялся, а DNS на физическом интерфейсе остался указывать в пустоту.
+func forceRevertTun(ctx context.Context, opts Options) (int, error) {
+	exec := opts.Executor
+	if exec == nil {
+		exec = osExecutor{}
+	}
+	if !opts.DryRun && !exec.LookPath(psExe) {
+		return 0, errors.New("vpn: не найден powershell.exe: без него нельзя снять остатки системы")
+	}
+	rec := &record{exec: exec, logf: opts.Logf, dryRun: opts.DryRun}
+	w := &windowsRoutes{exec: exec, logf: opts.Logf, dryRun: opts.DryRun}
+
+	var errs []error
+	interfaces, err := w.dnsInterfaces(ctx, rec, opts.TUNName)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("vpn: чтение DNS интерфейсов: %w", err))
+	}
+	for _, iface := range interfaces {
+		kept := foreignDNS(iface.ServerAddresses)
+		if len(kept) == len(iface.ServerAddresses) {
+			continue
+		}
+		if err := rec.do(ctx, dnsSetCommand(iface.InterfaceIndex, kept), nil); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	out, err := rec.read(ctx, psExe, psArgs(staleRoutesScript)...)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("vpn: чтение маршрутов warpgen: %w", err))
+	} else {
+		routes, perr := parsePSRoutes(out)
+		if perr != nil {
+			errs = append(errs, perr)
+		}
+		for _, route := range routes {
+			argv := psCleanup(fmt.Sprintf(
+				"Remove-NetRoute -DestinationPrefix %s -InterfaceIndex %d -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue | Out-Null",
+				psQuote(route.DestinationPrefix), route.InterfaceIndex))
+			if err := rec.do(ctx, argv, nil); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+
+	// Кэш DNS помнит ответы прошлого запуска: без сброса система продолжит
+	// отдавать адреса, полученные через уже снятый туннель. Счётчик шагов не
+	// включает эту команду: она ничего не восстанавливает.
+	if count := len(rec.steps); count > 0 && !opts.DryRun {
+		_ = exec.Run(ctx, psExe, psArgs(clearDNSCacheScript)...)
+	}
+	return len(rec.steps), errors.Join(errs...)
+}
+
+// parsePSRoutes разбирает ответ staleRoutesScript: массив, один объект или
+// пустой список.
+func parsePSRoutes(out string) ([]psRoute, error) {
+	text := strings.TrimSpace(out)
+	if text == "" || text == "[]" {
+		return nil, nil
+	}
+	if strings.HasPrefix(text, "[") {
+		var list []psRoute
+		if err := json.Unmarshal([]byte(text), &list); err != nil {
+			return nil, fmt.Errorf("vpn: разбор маршрутов warpgen: %w", err)
+		}
+		return list, nil
+	}
+	var one psRoute
+	if err := json.Unmarshal([]byte(text), &one); err != nil {
+		return nil, fmt.Errorf("vpn: разбор маршрутов warpgen: %w", err)
+	}
+	return []psRoute{one}, nil
 }
 
 // ReadCurrentDNS определяет DNS текущего подключения для пресета «DNS
@@ -526,6 +718,15 @@ foreach ($s in $cfg.ServerAddresses) { if ($s) { $servers += $s } }
 [pscustomobject]@{ Interface = $r.InterfaceAlias; Servers = $servers } | ConvertTo-Json -Compress`
 
 const clearDNSCacheScript = `Clear-DnsClientCache -ErrorAction SilentlyContinue; exit 0`
+
+// staleRoutesScript перечисляет маршруты, которые держит warpgen-адаптер.
+// Опознаём их по имени интерфейса и трём префиксам, которые ставит только
+// warpgen: чужие маршруты (в том числе других VPN) не трогаем.
+const staleRoutesScript = `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false);
+$items = Get-NetRoute -PolicyStore ActiveStore -ErrorAction SilentlyContinue |
+  Where-Object { $_.InterfaceAlias -like 'warpgen*' -and ($_.DestinationPrefix -in @('0.0.0.0/1','128.0.0.0/1','::/0')) } |
+  Select-Object DestinationPrefix, InterfaceIndex
+if ($null -eq $items) { '[]' } else { @($items) | ConvertTo-Json -Compress }`
 
 // osExecutor выполняет команды через os/exec. Группу процессов на Windows не
 // заводим: SIGINT дочернему процессу всё равно не доставить, остановкой

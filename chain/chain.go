@@ -278,6 +278,13 @@ func runThrough(ctx context.Context, opts Options) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Остаточный warp-plus от прошлого запуска (warpgen убили жёстко, остановка не
+	// отработала) держит порт SOCKS5 и файлы кэша: без зачистки новая попытка
+	// падает с «порт занят», а сброс кэша — с «не удалось сбросить кэш Psiphon».
+	if killed := KillStaleWarpPlus(bin); len(killed) > 0 {
+		opts.logf("остаточный warp-plus от прошлого запуска: завершён %s", strings.Join(killed, ", "))
+		waitPortFree(opts.Bind, portReleaseTimeout)
+	}
 
 	attempted := false
 	try := func(ctx context.Context, opts Options, cc string) (*Session, *attemptFailure) {
@@ -329,24 +336,47 @@ func needsSoftPass(attempts []Attempt) bool {
 // resetPsiphonState удаляет накопленное состояние Psiphon в каталоге кэша,
 // сохраняя identity warp-plus (подкаталог primary). warp-plus держит identity и
 // кэш Psiphon в одном каталоге, поэтому убираем всё, кроме identity.
+//
+// Повторы нужны под Windows: занятый живым процессом файл (остаточный warp-plus,
+// антивирусный сканер, индексатор) удалить не даёт, а состояние освобождается
+// само через доли секунды. Настоящая блокировка живым warp-plus снимается
+// зачисткой KillStaleWarpPlus до первой попытки.
 func resetPsiphonState(cacheDir string) error {
-	entries, err := os.ReadDir(cacheDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+	var firstErr error
+	for attempt := 0; attempt < resetAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(resetPause)
 		}
-		return err
-	}
-	for _, entry := range entries {
-		if entry.IsDir() && strings.EqualFold(entry.Name(), identityDirName) {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(cacheDir, entry.Name())); err != nil {
+		entries, err := os.ReadDir(cacheDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
+		firstErr = nil
+		for _, entry := range entries {
+			if entry.IsDir() && strings.EqualFold(entry.Name(), identityDirName) {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(cacheDir, entry.Name())); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+		if firstErr == nil {
+			return nil
+		}
 	}
-	return nil
+	return fmt.Errorf("файл кэша Psiphon занят другим процессом: %w", firstErr)
 }
+
+const (
+	// resetAttempts / resetPause — повторы сброса кэша Psiphon (см. resetPsiphonState).
+	resetAttempts = 4
+	resetPause    = 300 * time.Millisecond
+)
 
 // runCountries перебирает страны в порядке приоритета, делая до Attempts попыток
 // на каждую, и останавливается на первой успешной.

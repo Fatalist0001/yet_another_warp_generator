@@ -53,6 +53,11 @@ func (d *testDevice) Read(p []byte) (int, error) {
 }
 
 func (d *testDevice) Write(p []byte) (int, error) {
+	// Стек клиента здесь только IPv4-й: ответы моста на IPv6 (ICMPv6) в него
+	// не отдаём — проверяются отдельно, на генераторах пакетов (icmp_test.go).
+	if len(p) > 0 && p[0]>>4 == 6 {
+		return len(p), nil
+	}
 	d.ep.InjectInbound(header.IPv4ProtocolNumber, stack.NewPacketBuffer(stack.PacketBufferOptions{
 		Payload: buffer.MakeWithData(append([]byte(nil), p...)),
 	}))
@@ -378,12 +383,32 @@ func dnsAnswer(id uint16) []byte {
 
 // --- сборка стенда ---
 
+// resolverList — резолверы моста в тесте: список можно менять на ходу (мост
+// забирает его из горутин DNS-потоков).
+type resolverList struct {
+	mu   sync.Mutex
+	list []string
+}
+
+func (r *resolverList) get() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.list...)
+}
+
+func (r *resolverList) set(list ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.list = append([]string(nil), list...)
+}
+
 // bridgeStand — мост, клиентский стек и поддельный SOCKS5 для одного теста.
 type bridgeStand struct {
-	bridge   *Bridge
-	client   *testClient
-	socks    *fakeSOCKS5
-	resolver string
+	bridge    *Bridge
+	client    *testClient
+	socks     *fakeSOCKS5
+	resolver  string
+	resolvers *resolverList
 }
 
 func newBridgeStand(t *testing.T, backend func(target string) (net.Conn, error)) *bridgeStand {
@@ -391,6 +416,7 @@ func newBridgeStand(t *testing.T, backend func(target string) (net.Conn, error))
 	socks := newFakeSOCKS5(t, backend)
 	client := newTestClient(t)
 	resolver := "1.1.1.1:53"
+	resolvers := &resolverList{list: []string{resolver}}
 
 	bridge, err := NewBridge(BridgeOptions{
 		Device:  client.dev,
@@ -403,6 +429,7 @@ func newBridgeStand(t *testing.T, backend func(target string) (net.Conn, error))
 		DialTimeout: 3 * time.Second,
 		IdleTimeout: 5 * time.Second,
 		Resolver:    func() string { return resolver },
+		Resolvers:   resolvers.get,
 		UDP:         UDPDrop,
 		Logf:        t.Logf,
 	})
@@ -417,7 +444,7 @@ func newBridgeStand(t *testing.T, backend func(target string) (net.Conn, error))
 			t.Logf("Close: %v", err)
 		}
 	})
-	return &bridgeStand{bridge: bridge, client: client, socks: socks, resolver: resolver}
+	return &bridgeStand{bridge: bridge, client: client, socks: socks, resolver: resolver, resolvers: resolvers}
 }
 
 // dialTCPFrom — соединение из клиентского стека на произвольный адрес.
@@ -661,6 +688,94 @@ func TestBridgeDNSOverTCP(t *testing.T) {
 	}
 	if got := stand.socks.requested(); len(got) != 1 || got[0] != stand.resolver {
 		t.Errorf("SOCKS5 запросил %v, ожидали %s", got, stand.resolver)
+	}
+}
+
+// Первый резолвер не отвечает — запрос уходит следующему, и клиент получает
+// настоящий ответ, а не таймаут.
+func TestBridgeDNSFallsBackToNextResolver(t *testing.T) {
+	dnsAddr, queries := dnsOverTCP(t, 0)
+	stand := newBridgeStand(t, func(target string) (net.Conn, error) {
+		if target != "8.8.8.8:53" {
+			return nil, fmt.Errorf("резолвер %s недоступен", target)
+		}
+		return net.Dial("tcp", dnsAddr)
+	})
+	stand.resolvers.set("1.1.1.1:53", "8.8.8.8:53")
+
+	conn, err := stand.dialUDP(netip.AddrPortFrom(netip.MustParseAddr("8.8.4.4"), 53))
+	if err != nil {
+		t.Fatalf("UDP-сокет: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write(dnsQuery(0x2222)); err != nil {
+		t.Fatalf("запрос: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 512)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("ответ: %v", err)
+	}
+	var msg dnsmessage.Message
+	if err := msg.Unpack(buf[:n]); err != nil {
+		t.Fatalf("ответ не разбирается: %v", err)
+	}
+	if msg.Header.ID != 0x2222 || len(msg.Answers) != 1 {
+		t.Errorf("ответ = %+v (ожидали адрес от второго резолвера)", msg.Header)
+	}
+
+	requested := stand.socks.requested()
+	asked := map[string]bool{}
+	for _, r := range requested {
+		asked[r] = true
+	}
+	if !asked["1.1.1.1:53"] || !asked["8.8.8.8:53"] {
+		t.Errorf("SOCKS5 запросил %v, ожидали обоих кандидатов", requested)
+	}
+	if got := queries.Load(); got != 1 {
+		t.Errorf("до резолвера дошло %d запросов, ожидали 1", got)
+	}
+}
+
+// Ни один резолвер не ответил — клиент сразу получает SERVFAIL, а не тишину:
+// иначе система ждёт свой таймаут на каждую попытку и решает, что сети нет.
+func TestBridgeDNSServfailWhenAllResolversFail(t *testing.T) {
+	stand := newBridgeStand(t, func(string) (net.Conn, error) {
+		return nil, errors.New("цепочка недоступна")
+	})
+
+	conn, err := stand.dialUDP(netip.AddrPortFrom(netip.MustParseAddr("8.8.4.4"), 53))
+	if err != nil {
+		t.Fatalf("UDP-сокет: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write(dnsQuery(0x0bad)); err != nil {
+		t.Fatalf("запрос: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 512)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("клиент не получил отказа: %v", err)
+	}
+	var msg dnsmessage.Message
+	if err := msg.Unpack(buf[:n]); err != nil {
+		t.Fatalf("ответ не разбирается: %v", err)
+	}
+	if msg.Header.ID != 0x0bad || !msg.Header.Response {
+		t.Errorf("ответ = %+v, ожидали ответ на id 0x0bad", msg.Header)
+	}
+	if msg.Header.RCode != dnsmessage.RCodeServerFailure {
+		t.Errorf("RCODE = %v, ожидали SERVFAIL", msg.Header.RCode)
+	}
+	if len(msg.Questions) != 1 || len(msg.Answers) != 0 {
+		t.Errorf("вопросов %d, ответов %d (ожидали вопрос без ответов)", len(msg.Questions), len(msg.Answers))
+	}
+	if stats := stand.bridge.Stats(); stats.DNSErrors == 0 {
+		t.Error("сбой DNS не учтён в счётчиках")
 	}
 }
 

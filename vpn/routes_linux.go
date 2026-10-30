@@ -10,12 +10,24 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"net/netip"
 )
+
+// platformStateDir — журнал отката живёт в профиле пользователя
+// (~/.warpgen/state): папку с бинарником можно перенести или удалить, а
+// применённые маршруты останутся в системе и должны быть откачены.
+func platformStateDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".warpgen", "state")
+	}
+	return filepath.Join(home, ".warpgen", "state")
+}
 
 // newRouteManager — RouteManager для Linux: команды утилит ip и resolvectl, без
 // сторонних библиотек.
@@ -218,10 +230,13 @@ func (l *linuxRoutes) apply(ctx context.Context, rec *record, plan Plan) error {
 		}
 	}
 
-	// IPv6 уводим в чёрную дыру: мост работает только с IPv4, и трафик не должен
-	// уходить мимо туннеля.
-	argv := []string{"ip", "-6", "route", "replace", "blackhole", "default"}
-	inverse := []string{"ip", "-6", "route", "del", "blackhole", "default"}
+	// IPv6 в туннель не идёт (мост работает только с IPv4), но и молча
+	// пропадать он не должен: на «blackhole» ядро дропает пакеты без ответа, и
+	// приложение висит до собственного таймаута — это и выглядело как «сеть
+	// подключилась не сразу». «unreachable» даёт EHOSTUNREACH сразу, и клиент
+	// переходит на IPv4 без задержки.
+	argv := []string{"ip", "-6", "route", "replace", "unreachable", "default"}
+	inverse := []string{"ip", "-6", "route", "del", "unreachable", "default"}
 	if err := rec.do(ctx, argv, inverse); err != nil {
 		return err
 	}

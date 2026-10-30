@@ -341,7 +341,8 @@ sudo ./warpgen run --warp-only --tun          # тем же туннелем —
 приложение → TUN (198.18.0.1/15) → мост (gVisor netstack, promiscuous + spoofing)
                                      ├─ TCP → SOCKS5 CONNECT → Psiphon → WARP → AWG → Cloudflare
                                      ├─ UDP/TCP 53 → DNS-over-TCP через SOCKS5 → выбранный резолвер
-                                     └─ остальной UDP, ICMP, IPv6 → отбрасываются (со счётчиками)
+                                     └─ остальной UDP и IPv6 → не проводятся, в ответ ICMP-отказ
+                                        (порт недоступен / нет маршрута), ICMP — молча
 ```
 
 ```bash
@@ -374,7 +375,9 @@ curl https://ifconfig.co/json                   # уже без --proxy: тра�
    обновляется;
 3. маршрут по умолчанию через TUN двумя половинами — `0.0.0.0/1` и `128.0.0.0/1`:
    они перекрывают существующий default, не удаляя его;
-4. `blackhole` для IPv6: мост работает только с IPv4;
+4. `unreachable` для IPv6: мост работает только с IPv4, но и молча IPv6 не
+   пропадает — ядро сразу отдаёт `EHOSTUNREACH`, и приложение переходит на IPv4
+   (с `blackhole` оно висело до собственного таймаута);
 5. системный DNS через `resolvectl` — на **соседний адрес подсети TUN**
    (`198.18.0.2`), а не на адрес интерфейса: пакет к собственному адресу ядро
    доставляет локально (таблица `local`), и запрос к мосту не попадает. При откате
@@ -386,8 +389,12 @@ curl https://ifconfig.co/json                   # уже без --proxy: тра�
 DNS: перехватываются UDP и TCP на 53-й порт к любому адресу, запрос уходит выбранному
 резолверу как DNS-over-TCP через SOCKS5 (кэша нет). Кандидаты (`--dns`) проверяются
 через цепочку после `ready`, берётся самый быстрый; при смене звена выбор повторяется.
-Всё остальное UDP идёт `--udp=drop`: QUIC (`UDP/443`) отбрасывается молча, чтобы
-приложения откатывались на TCP.
+Всё остальное UDP идёт `--udp=drop`: QUIC (`UDP/443`) не проксируется, но и не
+пропадает без ответа — на него уходит ICMP «порт недоступен» (`vpn/icmp.go`),
+поэтому браузер бросает QUIC сразу и идёт по TCP, а не ждёт QUIC-таймаут. То же
+с IPv6: мост отвечает ICMPv6 «нет маршрута», вместо тихого дропа, который
+выглядел как «сеть включилась не сразу» (Telegram висел на мёртвом
+IPv6-соединении до переподключения туннеля).
 
 **Чего не будет:** видеозвонков и игр на UDP (проброс UDP не реализован, точка
 расширения — `handleUDP` в `vpn/bridge.go`), любого трафика по IPv6, ICMP-пинга, а
@@ -402,7 +409,7 @@ DNS: перехватываются UDP и TCP на 53-й порт к любом
 |---|---|---|---|
 | Linux (сделано) | `vpn/tun_linux.go`: `tun.CreateTUN`, `tun.CreateTUNFromFile` | `vpn/routes_linux.go`: команды `ip` и `resolvectl` | root, проверка до старта |
 | Android (сделано в APK) | `vpn.DeviceFromFile` (fd отдаёт `VpnService.Builder`) → `tun.CreateUnmonitoredTUNFromFD` → `vpn.Options.Device`; без `SIOCSIFMTU`/netlink, MTU задаёт VpnService | `vpn/routes_android.go`: заглушка, адрес/маршруты/DNS задаёт VpnService; приложение исключено из VPN через `addDisallowedApplication` | проверки нет: `vpn.Options.CheckPrivileges` подменяется на пустую |
-| Windows (сделано) | `vpn/tun_windows.go`: Wintun через `amneziawg-go/tun`; `wintun.dll` лежит рядом с `warpgen.exe` | `vpn/routes_windows.go`: PowerShell (`Get-NetRoute`, `New-NetIPAddress`, `New-NetRoute`, `Set-DnsClientServerAddress`), исключение endpoint — маршрутом `/32`; IPv6 уводится в TUN и отбрасывается | администратор (UAC) |
+| Windows (сделано) | `vpn/tun_windows.go`: Wintun через `amneziawg-go/tun`; `wintun.dll` лежит рядом с `warpgen.exe` | `vpn/routes_windows.go`: PowerShell (`Get-NetRoute`, `New-NetIPAddress`, `New-NetRoute`, `Set-DnsClientServerAddress`), исключение endpoint — маршрутом `/32`; IPv6 уводится в TUN, мост отвечает ICMPv6 «нет маршрута» | администратор (UAC) |
 | macOS | utun (`vpn/tun_darwin.go`) | `vpn/routes_darwin.go`: `route add` и `networksetup -setdnsservers` | root |
 
 Общий контракт один: `vpn.Device` (чтение/запись IP-пакетов, имя, MTU, Close),
@@ -431,12 +438,12 @@ WARPGEN_E2E=1 go test -tags e2e ./core/ -run E2E -v
 | 4 | failover: искусственно оборвать внешний туннель | событие `failover` и пересоздание туннеля с форвардером на следующем endpoint |
 | 5 | чистая остановка по Ctrl+C | нет дочерних процессов (`pgrep -a warp-plus`) и слушающих портов (`ss -lunp \| grep 8086`) |
 | 6 | `sudo warpgen run --tun --dry-run` | печатает план и команды, в системе ничего не меняется (нет `warpgen0`) |
-| 7 | `sudo warpgen run --tun`, затем `ip addr show warpgen0`, `ip route show`, `ip -6 route show blackhole`, `resolvectl status` | TUN поднят (`198.18.0.1/15`, MTU 1400), в системе есть `/32` endpoint мимо TUN, `0.0.0.0/1` и `128.0.0.0/1` через TUN, blackhole `::/0`, системный DNS — на соседний адрес подсети TUN (`198.18.0.2`); событие `routes_applied` |
+| 7 | `sudo warpgen run --tun`, затем `ip addr show warpgen0`, `ip route show`, `ip -6 route show unreachable`, `resolvectl status` | TUN поднят (`198.18.0.1/15`, MTU 1400), в системе есть `/32` endpoint мимо TUN, `0.0.0.0/1` и `128.0.0.0/1` через TUN, `unreachable ::/0`, системный DNS — на соседний адрес подсети TUN (`198.18.0.2`); событие `routes_applied` |
 | 8 | нет утечек DNS: `sudo tcpdump -ni <физический интерфейс> port 53` | запросов по 53-му порту мимо TUN нет |
 | 9 | обычный сайт и `curl` по IP | `curl https://ifconfig.co/json` и `curl http://1.1.1.1/` отвечают, `curl -6` не проходит, `warpgen` переживает это |
 | 10 | поведение при failover | события `failover` и `dns_selected`, маршруты и TUN остаются на месте, трафик не уходит напрямую |
-| 11 | чистый откат после Ctrl+C | `ip route show` без `0.0.0.0/1`, `128.0.0.0/1` и `/32` endpoint, `ip -6 route` без blackhole, `ip link show warpgen0` — нет интерфейса, DNS возвращён (прежние серверы интерфейса), файл состояния удалён |
-| 12 | восстановление после `kill -9` | `sudo ./warpgen tun-revert` печатает и выполняет отмену записанных команд (журнал `~/.warpgen/state/warpgen0.st` очищается, повтор сообщает «откат уже сделан»); запасной вариант — вручную: `sudo ip route del 0.0.0.0/1 dev warpgen0`, `sudo ip route del 128.0.0.0/1 dev warpgen0`, `sudo ip -6 route del blackhole default`, `sudo resolvectl revert <физический интерфейс>` |
+| 11 | чистый откат после Ctrl+C | `ip route show` без `0.0.0.0/1`, `128.0.0.0/1` и `/32` endpoint, `ip -6 route` без `unreachable ::/0`, `ip link show warpgen0` — нет интерфейса, DNS возвращён (прежние серверы интерфейса), файл состояния удалён |
+| 12 | восстановление после `kill -9` | `sudo ./warpgen tun-revert` печатает и выполняет отмену записанных команд (журнал `~/.warpgen/state/warpgen0.st` очищается, повтор сообщает «откат уже сделан»); запасной вариант — вручную: `sudo ip route del 0.0.0.0/1 dev warpgen0`, `sudo ip route del 128.0.0.0/1 dev warpgen0`, `sudo ip -6 route del unreachable default`, `sudo resolvectl revert <физический интерфейс>` |
 | 13 | `sudo ./warpgen run --warp-only --tun`, затем `curl http://1.1.1.1/`, `ip route show`, `pgrep -a warp-plus` | трафик идёт через единственный туннель (выход RU, `warp=on`), маршруты и TUN снимаются после Ctrl+C, процесс warp-plus не запускается |
 
 Пункты 6–12 требуют root и меняют сеть машины, поэтому автоматических тестов для них
@@ -571,17 +578,21 @@ cd gui && flutter run -d windows   # запуск из репозитория (�
   `warpgen.exe`; поэтому все три лежат в одном каталоге;
 - полный системный туннель работает так же, как на Linux: переключатель
   «Системный туннель» создаёт Wintun-адаптер `warpgen0`, ведёт весь IPv4-трафик
-  машины через цепочку, перенастраивает системный DNS и отбрасывает IPv6
-  (kill switch). Выключенный переключатель оставляет только локальный SOCKS5
+  машины через цепочку, перенастраивает системный DNS и отсекает IPv6 ошибкой
+  ICMPv6 «нет маршрута» (kill switch). Выключенный переключатель оставляет только локальный SOCKS5
   (`127.0.0.1:8086`), как раньше;
 - GUI запускается с манифестом `requireAdministrator`: без UAC нельзя создать
   адаптер и менять маршруты. Дочерний `warpgen.exe` наследует права, отдельного
   запроса при подключении нет. Если `wintun.dll` рядом с exe нет, `--tun`
   завершается понятной ошибкой;
 - все данные — рядом с `warpgen_gui.exe`, в `warpgen-data\`: настройки, аккаунт,
-  профиль endpoint'ов, identity warp-plus, кэш Psiphon и журнал маршрутов для
-  `tun-revert`. Если каталог только для чтения (например, `Program Files`),
-  GUI откатывается в `%USERPROFILE%\.warpgen`;
+  профиль endpoint'ов, identity warp-plus и кэш Psiphon. Если каталог только
+  для чтения (например, `Program Files`), GUI откатывается в
+  `%USERPROFILE%\.warpgen`;
+- журнал отката маршрутов — исключение: он лежит в `%LOCALAPPDATA%\warpgen\state`
+  и папку программы не покидает только потому, что она переносится. Без журнала
+  применённые маршруты и DNS не снять, а zip распаковывают куда угодно и
+  удаляют;
 - «DNS провайдера» работает: `dns-current` читает серверы физического
   интерфейса через PowerShell; остальные DNS-пресеты и свой DNS тоже работают;
 - мягкая остановка — файлом-сигналом `--stop-file`, поэтому CLI успевает снять
@@ -601,7 +612,11 @@ cd gui && flutter run -d windows   # запуск из репозитория (�
 3. отключиться: маршруты `warpgen0` исчезли, DNS интерфейсов прежний,
    `Get-NetAdapter -Name warpgen0` больше не используется;
 4. при `kill -9` / снятии процесса диспетчером — `warpgen.exe tun-revert`
-   откатит маршруты и DNS по журналу из `warpgen-data\state`;
+   откатит маршруты и DNS по журналу из `%LOCALAPPDATA%\warpgen\state`; если
+   журнала нет (папку перенесли, файл удалили) — `warpgen.exe tun-revert --force`
+   снимет оставшийся DNS `198.18.0.x` с интерфейсов и маршруты через `warpgen*`;
+   следующий запуск делает то же самое сам — и откат прошлого журнала, и снятие
+   своего DNS;
 5. закрыть окно крестиком: окно исчезает, иконка остаётся в трее, туннель
    работает; двойной клик по иконке возвращает окно; запуск exe заново
    показывает то же окно, а в диспетчере остаётся один `warpgen.exe`;

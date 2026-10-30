@@ -5,7 +5,19 @@ package vpn
 import (
 	"context"
 	"net/netip"
+	"os"
+	"path/filepath"
 )
+
+// platformStateDir — журнал отката на Android не нужен (маршруты живёт
+// VpnService), но statePath должен собираться и здесь.
+func platformStateDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".warpgen", "state")
+	}
+	return filepath.Join(home, ".warpgen", "state")
+}
 
 // androidRoutes — заглушка: адрес, маршруты и DNS задаёт VpnService.Builder.
 // Приложение исключено из VPN (addDisallowedApplication), поэтому отдельный

@@ -248,7 +248,11 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
         // Остановка из GUI: процесс под pkexec — root, а на Windows сигналы
         // дочернему процессу не доставляются. CLI проверяет файл сам.
         stopFile: '$_dataDir/run/stop',
-        stateDir: '$_dataDir/state',
+        // Журнал отката не должен жить рядом с exe: портативную папку
+        // переносят и удаляют, а применённые маршруты и DNS остаются в системе.
+        // На Windows CLI сам берёт каталог из профиля (%LOCALAPPDATA%); на
+        // Linux профиль и так ~/.warpgen, поэтому путь передаём только там.
+        stateDir: Platform.isWindows ? null : '$_dataDir/state',
         endpointCache: '$_dataDir/endpoints.json',
       ),
       homeDir: _homeDir,

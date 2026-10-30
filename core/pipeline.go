@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Fatalist0001/yet_another_warp_generator/chain"
 	"github.com/Fatalist0001/yet_another_warp_generator/scanner"
 	"github.com/Fatalist0001/yet_another_warp_generator/tunnel"
 	"github.com/Fatalist0001/yet_another_warp_generator/vpn"
@@ -52,6 +53,13 @@ func (r *runner) pipeline(ctx context.Context) error {
 	defer r.stopTUN(ctx)
 
 	if r.cfg.Direct {
+		// Остаточный warp-plus от прошлого запуска в Psiphon-режиме занимает тот же
+		// порт — убираем до попытки занять сокет (иначе bind уже занят).
+		if bin, err := chain.ResolveWarpPlus(""); err == nil {
+			if killed := chain.KillStaleWarpPlus(bin); len(killed) > 0 {
+				r.log("остаточный warp-plus от прошлого запуска: завершён %s", strings.Join(killed, ", "))
+			}
+		}
 		// Слушатель SOCKS5 занимает один порт на весь прогон: при failover
 		// меняется только туннель (SetTunnel), а мост системного туннеля
 		// продолжает ходить на тот же адрес.

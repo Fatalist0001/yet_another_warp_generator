@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 // resolverFarm — поддельный SOCKS5, который отдаёт CONNECT к адресам резолверов
@@ -148,6 +150,75 @@ func TestResolverAllFail(t *testing.T) {
 	}
 	if got := r.Effective(); got != "1.1.1.1:53" {
 		t.Errorf("Effective = %q: прошлый выбор должен сохраниться", got)
+	}
+}
+
+// Кандидаты для перебора: выбранный первым, за ним остальные без повторов.
+func TestResolverCandidates(t *testing.T) {
+	farm := newResolverFarm(t)
+	slow, _ := dnsOverTCP(t, 30*time.Millisecond)
+	fast, _ := dnsOverTCP(t, 0)
+	farm.route("1.1.1.1:53", slow)
+	farm.route("8.8.8.8:5353", fast)
+
+	r := farm.resolver(t, "1.1.1.1", "8.8.8.8:5353")
+	if got := strings.Join(r.Candidates(), ","); got != "1.1.1.1:53,8.8.8.8:5353" {
+		t.Fatalf("до выбора кандидаты = %q", got)
+	}
+
+	if _, _, err := r.Select(context.Background()); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got := strings.Join(r.Candidates(), ","); got != "8.8.8.8:5353,1.1.1.1:53" {
+		t.Errorf("после выбора кандидаты = %q, ожидали быстрого первым", got)
+	}
+}
+
+// Один и тот же резолвер в разных записях не дублируется: повтор адреса — это
+// бесполезный второй дозвон.
+func TestResolverCandidatesDedupe(t *testing.T) {
+	farm := newResolverFarm(t)
+	r := farm.resolver(t, "1.1.1.1", "1.1.1.1:53")
+	if got := r.Candidates(); len(got) != 1 || got[0] != "1.1.1.1:53" {
+		t.Errorf("кандидаты = %v, ожидали один адрес", got)
+	}
+}
+
+// SERVFAIL сохраняет id и вопрос запроса, но не тащит его дополнительные записи.
+func TestDNSServfail(t *testing.T) {
+	query := dnsQuery(0x7777)
+	resp := dnsServfail(query)
+	if resp == nil {
+		t.Fatal("SERVFAIL не собран")
+	}
+
+	var msg dnsmessage.Message
+	if err := msg.Unpack(resp); err != nil {
+		t.Fatalf("SERVFAIL не разбирается: %v", err)
+	}
+	if msg.Header.ID != 0x7777 {
+		t.Errorf("id = %#x", msg.Header.ID)
+	}
+	if !msg.Header.Response {
+		t.Error("QR не выставлен")
+	}
+	if msg.Header.RCode != dnsmessage.RCodeServerFailure {
+		t.Errorf("RCODE = %v", msg.Header.RCode)
+	}
+	if len(msg.Questions) != 1 {
+		t.Errorf("вопросов %d", len(msg.Questions))
+	}
+	if len(msg.Answers) != 0 || len(msg.Authorities) != 0 || len(msg.Additionals) != 0 {
+		t.Errorf("в SERVFAIL попали записи: %d/%d/%d", len(msg.Answers), len(msg.Authorities), len(msg.Additionals))
+	}
+
+	var again dnsmessage.Message
+	if err := again.Unpack(query); err != nil {
+		t.Fatalf("исходный запрос повреждён: %v", err)
+	}
+
+	if got := dnsServfail([]byte{0x12, 0x34, 0x01}); got != nil {
+		t.Errorf("обрезанный запрос: ожидали nil, получили %d байт", len(got))
 	}
 }
 

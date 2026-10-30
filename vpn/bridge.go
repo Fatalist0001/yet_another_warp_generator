@@ -28,6 +28,12 @@ import (
 // nicID — единственная сетевая карта моста.
 const nicID = tcpip.NICID(1)
 
+// dnsTryTimeout — предел одного обмена с одним резолвером.
+//
+// Он меньше общего дозвона: за это время мост успевает перебрать остальных
+// кандидатов и всё равно ответить клиенту раньше, чем тот сдастся сам.
+const dnsTryTimeout = 3 * time.Second
+
 // BridgeOptions — параметры моста.
 type BridgeOptions struct {
 	// Device — устройство пакетов (TUN).
@@ -42,8 +48,13 @@ type BridgeOptions struct {
 	DialTimeout time.Duration
 	// IdleTimeout — простой соединения и DNS-потока.
 	IdleTimeout time.Duration
-	// Resolver — текущий DNS-резолвер (ip:port).
+	// Resolver — текущий DNS-резолвер (ip:port). Используется, когда нет
+	// Resolvers: одна попытка на один адрес.
 	Resolver func() string
+	// Resolvers — резолверы в порядке предпочтения. Мост пробует их по очереди
+	// и только потом отвечает клиенту SERVFAIL, поэтому мёртвый резолвер не
+	// оставляет систему без DNS до перезапуска (см. Resolver.Candidates).
+	Resolvers func() []string
 	// UDP — политика обработки UDP.
 	UDP UDPPolicy
 	// Logf — приёмник служебных сообщений.
@@ -64,9 +75,15 @@ type BridgeStats struct {
 	IPv6Dropped  int64
 	OtherDropped int64
 	Malformed    int64
+	// IPv6Rejected / UDPRejected — сколько отброшенных пакетов закрыли ошибкой
+	// ICMP, чтобы приложение не ждало собственного таймаута.
+	IPv6Rejected int64
+	UDPRejected  int64
 	// DNSFlows — сколько DNS-потоков клиентов обслужили, DNSErrors — сбои обмена.
 	DNSFlows  int64
 	DNSErrors int64
+	// ICMPThrottled — отказы, которые не отправлены из-за предела темпа.
+	ICMPThrottled int64
 }
 
 // Bridge — мост между TUN и SOCKS5: принимает пакеты к любым адресам, поднимает
@@ -89,6 +106,17 @@ type Bridge struct {
 	mu     sync.Mutex
 	stats  BridgeStats
 	closed bool
+
+	// writeMu сериализует записи в устройство: насос стека и ответы ICMP
+	// пишут из разных горутин, а устройство этого не допускает (Wintun требует
+	// одну сессию записи, а nativeDevice переиспользует буфер под заголовок).
+	writeMu sync.Mutex
+
+	// Лимит темпа ICMP-отказов: приложение с мёртвыми соединениями шлёт пакеты
+	// пачками, и поток ошибок не должен занимать насос устройства.
+	rejectMu   sync.Mutex
+	rejectSec  int64
+	rejectNums int
 }
 
 // NewBridge собирает стек и форвардеры. Пакеты не идут, пока не вызван Start.
@@ -212,9 +240,59 @@ func (b *Bridge) Close() error {
 	b.wg.Wait()
 
 	stats := b.Stats()
-	b.log("мост остановлен: соединений %d, отброшено UDP %d (QUIC %d), ICMP %d, IPv6 %d, DNS-потоков %d (ошибок %d)",
-		stats.TCPAccepted, stats.UDPDropped, stats.QUICDropped, stats.ICMPDropped, stats.IPv6Dropped, stats.DNSFlows, stats.DNSErrors)
+	b.log("мост остановлен: соединений %d, отброшено UDP %d (QUIC %d), ICMP %d, IPv6 %d, отказов ICMP %d (IPv6 %d, UDP %d, сверх лимита %d), DNS-потоков %d (ошибок %d)",
+		stats.TCPAccepted, stats.UDPDropped, stats.QUICDropped, stats.ICMPDropped, stats.IPv6Dropped,
+		stats.IPv6Rejected+stats.UDPRejected, stats.IPv6Rejected, stats.UDPRejected, stats.ICMPThrottled,
+		stats.DNSFlows, stats.DNSErrors)
 	return err
+}
+
+// writeDevice — единственная точка записи пакетов в устройство.
+func (b *Bridge) writeDevice(data []byte) (int, error) {
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	return b.dev.Write(data)
+}
+
+// allowReject ограничивает темп ICMP-отказов (не больше maxRejectPerSecond).
+func (b *Bridge) allowReject() bool {
+	sec := time.Now().Unix()
+	b.rejectMu.Lock()
+	defer b.rejectMu.Unlock()
+	if b.rejectSec != sec {
+		b.rejectSec, b.rejectNums = sec, 0
+	}
+	if b.rejectNums >= maxRejectPerSecond {
+		b.bump(func(s *BridgeStats) { s.ICMPThrottled++ })
+		return false
+	}
+	b.rejectNums++
+	return true
+}
+
+// rejectUDP отвечает на непроксируемый UDP «порт недоступен»: приложение
+// узнаёт об отказе сразу и откатывается на TCP.
+func (b *Bridge) rejectUDP(pkt []byte) {
+	reply, ok := icmpv4PortUnreachable(pkt)
+	if !ok {
+		return
+	}
+	b.bump(func(s *BridgeStats) { s.UDPRejected++ })
+	b.reject(reply)
+}
+
+// reject отправляет готовый ICMP-пакет обратно в TUN. Ошибка записи не валит
+// мост: отказ — подсказка приложению, а не условие работы туннеля.
+func (b *Bridge) reject(pkt []byte) {
+	if b.isClosed() || !b.allowReject() {
+		return
+	}
+	if ctx := b.ctx; ctx != nil && ctx.Err() != nil {
+		return
+	}
+	if _, err := b.writeDevice(pkt); err != nil && b.ctx.Err() == nil && !b.isClosed() {
+		b.log("мост: запись ICMP-отказа: %v", err)
+	}
 }
 
 // pumpDevice читает пакеты из TUN и отдаёт их политике пакетов.
@@ -267,7 +345,7 @@ func (b *Bridge) pumpStack() {
 		}
 		view := pkt.ToView()
 		data := view.AsSlice()
-		_, err := b.dev.Write(data)
+		_, err := b.writeDevice(data)
 		view.Release()
 		pkt.DecRef()
 		if err != nil {
@@ -297,13 +375,36 @@ func (b *Bridge) inject(pkt []byte) {
 		}))
 	case verdictDropIPv6:
 		b.bump(func(s *BridgeStats) { s.IPv6Dropped++ })
+		// IPv6 через SOCKS5 не идёт. Вместо тишины — «нет маршрута»: приложение
+		// сразу роняет попытку и переходит на IPv4, а не висит минутами.
+		//
+		// Одного ICMPv6 мало: его может не доставить сама ОС (фильтрация ICMP), и
+		// тогда попытка соединения висит до таймаута приложения. Поэтому на
+		// попытку соединения уходит ещё и TCP RST — его TCP-стек обрабатывает
+		// без участия ICMP.
+		replied := false
+		if reply, ok := icmpv6NoRoute(pkt); ok {
+			b.reject(reply)
+			replied = true
+		}
+		if reply, ok := tcpResetv6(pkt); ok {
+			b.reject(reply)
+			replied = true
+		}
+		if replied {
+			b.bump(func(s *BridgeStats) { s.IPv6Rejected++ })
+		}
 	case verdictDropICMP:
 		b.bump(func(s *BridgeStats) { s.ICMPDropped++ })
 	case verdictDropQUIC:
-		// QUIC отбрасываем молча — приложение должно откатиться на TCP.
+		// QUIC отбрасываем — приложение должно откатиться на TCP. Сказать об
+		// этом сразу важнее, чем промолчать: иначе браузер ждёт QUIC-таймаут
+		// и только потом пробует TCP.
 		b.bump(func(s *BridgeStats) { s.UDPDropped++; s.QUICDropped++ })
+		b.rejectUDP(pkt)
 	case verdictDropUDP:
 		b.bump(func(s *BridgeStats) { s.UDPDropped++ })
+		b.rejectUDP(pkt)
 	case verdictDropOther:
 		b.bump(func(s *BridgeStats) { s.OtherDropped++ })
 	case verdictDropMalformed:
@@ -326,8 +427,9 @@ const (
 )
 
 // classifyPacket — политика обработки входящего пакета. Работает только IPv4:
-// IPv6 уводится в blackhole маршрутом, ICMP через SOCKS5 не проксируется, а из
-// UDP имеет смысл только DNS (остальное — точка расширения под проброс UDP).
+// IPv6 (черный маршрут/ICMP-отказ), ICMP (через SOCKS5 не проксируется) и UDP
+// кроме DNS (точка расширения под проброс) не проводятся — на отброшенное мост
+// отвечает ошибкой ICMP, чтобы приложение не ждало таймаута.
 func classifyPacket(pkt []byte) verdict {
 	if len(pkt) < header.IPv4MinimumSize {
 		return verdictDropMalformed
@@ -395,22 +497,27 @@ func (b *Bridge) serveTCP(conn net.Conn, id stack.TransportEndpointID) {
 	defer conn.Close()
 
 	dst := target(id)
+	var remote net.Conn
+	var err error
 	if id.LocalPort == 53 {
-		dst = b.currentResolver()
-		if dst == "" {
+		// DNS-поток уходит резолверу, а не на адрес из запроса: клиент
+		// спрашивает адрес TUN, а резолвер выбирается цепочкой.
+		remote, err = b.dialDNS()
+		if err != nil {
 			b.bump(func(s *BridgeStats) { s.DNSErrors++ })
+			b.log("мост: DNS по TCP: %v", err)
 			return
 		}
-	}
-
-	ctx, cancel := context.WithTimeout(b.ctx, b.opts.DialTimeout)
-	defer cancel()
-	remote, err := b.opts.Dial(ctx, "tcp", dst)
-	if err != nil {
-		// При смене звена цепочки сюда попадают все новые соединения: клиент
-		// получает закрытие сразу, но трафик не уходит напрямую (kill switch).
-		b.log("мост: SOCKS5 %s: %v", dst, err)
-		return
+	} else {
+		ctx, cancel := context.WithTimeout(b.ctx, b.opts.DialTimeout)
+		remote, err = b.opts.Dial(ctx, "tcp", dst)
+		cancel()
+		if err != nil {
+			// При смене звена цепочки сюда попадают все новые соединения: клиент
+			// получает закрытие сразу, но трафик не уходит напрямую (kill switch).
+			b.log("мост: SOCKS5 %s: %v", dst, err)
+			return
+		}
 	}
 	defer remote.Close()
 
@@ -442,13 +549,18 @@ func (b *Bridge) handleUDP(r *udp.ForwarderRequest) bool {
 // serveDNS пересылает запросы клиента как DNS-over-TCP через SOCKS5: через
 // SOCKS5 доступен только TCP, а адрес назначения запроса не важен — выбор сделан
 // при подборе резолвера. Кэша нет: каждый запрос уходит в сеть.
+//
+// Резолверов может быть несколько, и они перебираются по очереди. Молчание здесь
+// дороже ошибки: если клиент не получил ни ответа, ни отказа, он ждёт свой
+// таймаут на каждую попытку, а приложение в это время считает, что сети нет. Ни
+// один резолвер не ответил — клиент сразу получает SERVFAIL.
 func (b *Bridge) serveDNS(conn *gonet.UDPConn) {
 	defer conn.Close()
 
-	var upstream net.Conn
+	var upstream *dnsUpstream
 	defer func() {
 		if upstream != nil {
-			_ = upstream.Close()
+			upstream.close()
 		}
 	}()
 
@@ -466,38 +578,129 @@ func (b *Bridge) serveDNS(conn *gonet.UDPConn) {
 		}
 		query := append([]byte(nil), buf[:n]...)
 
-		if upstream == nil {
-			addr := b.currentResolver()
-			if addr == "" {
-				b.bump(func(s *BridgeStats) { s.DNSErrors++ })
-				continue
-			}
-			ctx, cancel := context.WithTimeout(b.ctx, b.opts.DialTimeout)
-			uc, derr := b.opts.Dial(ctx, "tcp", addr)
-			cancel()
-			if derr != nil {
-				b.log("мост: DNS через SOCKS5 (%s): %v", addr, derr)
-				b.bump(func(s *BridgeStats) { s.DNSErrors++ })
-				continue
-			}
-			upstream = uc
-		}
-
-		resp, xerr := dnscheck.ExchangeTCP(upstream, query, b.opts.DialTimeout)
-		if xerr != nil {
-			b.log("мост: обмен DNS: %v", xerr)
+		resp := b.exchangeDNS(&upstream, query)
+		if resp == nil {
 			b.bump(func(s *BridgeStats) { s.DNSErrors++ })
-			_ = upstream.Close()
-			upstream = nil
-			continue
+			resp = dnsServfail(query)
+			if resp == nil {
+				continue
+			}
 		}
-		if err := conn.SetWriteDeadline(time.Now().Add(b.opts.DialTimeout)); err != nil {
+		if err := conn.SetWriteDeadline(time.Now().Add(dnsTryTimeout)); err != nil {
 			return
 		}
 		if _, err := conn.Write(resp); err != nil {
 			return
 		}
 	}
+}
+
+// dnsUpstream — соединение с одним резолвером, живущее вместе с DNS-потоком
+// клиента: пока резолвер отвечает, он переиспользуется.
+type dnsUpstream struct {
+	addr string
+	conn net.Conn
+}
+
+func (u *dnsUpstream) close() {
+	if u == nil || u.conn == nil {
+		return
+	}
+	_ = u.conn.Close()
+	u.conn = nil
+}
+
+// exchangeDNS отправляет запрос резолверам по очереди: сбой одного — повод
+// попробовать следующего, а не бросить запрос. nil — никто не ответил.
+func (b *Bridge) exchangeDNS(up **dnsUpstream, query []byte) []byte {
+	for _, addr := range b.dnsCandidates() {
+		resp, timedOut := b.tryDNS(up, addr, query)
+		if resp != nil {
+			return resp
+		}
+		if timedOut {
+			// Резолвер не отвечает — второй раз ждать его незачем.
+			continue
+		}
+		// Соединение могло закрыться со стороны сервера: свежий дозвон до того
+		// же адреса обычно решает, и только потом идём к следующему.
+		if resp, _ := b.tryDNS(up, addr, query); resp != nil {
+			return resp
+		}
+	}
+	return nil
+}
+
+// tryDNS — один обмен с одним резолвером. timedOut означает, что адрес не
+// ответил вовсе (а не сломал уже открытое соединение).
+func (b *Bridge) tryDNS(up **dnsUpstream, addr string, query []byte) (resp []byte, timedOut bool) {
+	u := *up
+	if u != nil && u.addr != addr {
+		u.close()
+		u, *up = nil, nil
+	}
+	if u == nil {
+		conn, err := b.dialOne(addr)
+		if err != nil {
+			b.log("мост: DNS через SOCKS5 (%s): %v", addr, err)
+			return nil, false
+		}
+		u = &dnsUpstream{addr: addr, conn: conn}
+		*up = u
+	}
+	resp, err := dnscheck.ExchangeTCP(u.conn, query, dnsTryTimeout)
+	if err != nil {
+		b.log("мост: обмен DNS с %s: %v", addr, err)
+		u.close()
+		*up = nil
+		return nil, isTimeout(err)
+	}
+	return resp, false
+}
+
+// isTimeout — истёк срок обмена (резолвер молчит), а не оборвалось соединение.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// dialDNS — соединение с первым ответившим резолвером: для DNS по TCP, где
+// поток ведёт pump, а не serveDNS.
+func (b *Bridge) dialDNS() (net.Conn, error) {
+	var firstErr error
+	for _, addr := range b.dnsCandidates() {
+		conn, err := b.dialOne(addr)
+		if err == nil {
+			return conn, nil
+		}
+		if firstErr == nil {
+			firstErr = fmt.Errorf("%s: %w", addr, err)
+		}
+	}
+	if firstErr == nil {
+		return nil, errors.New("не выбран ни один DNS-резолвер")
+	}
+	return nil, firstErr
+}
+
+// dialOne открывает соединение через SOCKS5 с одним резолвером.
+func (b *Bridge) dialOne(addr string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(b.ctx, b.opts.DialTimeout)
+	defer cancel()
+	return b.opts.Dial(ctx, "tcp", addr)
+}
+
+// dnsCandidates — резолверы, которые стоит попробовать.
+func (b *Bridge) dnsCandidates() []string {
+	if b.opts.Resolvers != nil {
+		if list := b.opts.Resolvers(); len(list) > 0 {
+			return list
+		}
+	}
+	if addr := b.currentResolver(); addr != "" {
+		return []string{addr}
+	}
+	return nil
 }
 
 // currentResolver — резолвер, выбранный после готовности цепочки.

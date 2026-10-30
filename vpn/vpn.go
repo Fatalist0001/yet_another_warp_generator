@@ -4,8 +4,10 @@
 // Схема: TUN → мост на gVisor netstack → SOCKS5 (Psiphon) → внутренний WARP →
 // внешний AmneziaWG → Cloudflare. Мост принимает TCP-потоки к любым адресам и
 // открывает под каждый SOCKS5 CONNECT; DNS перехватывается на 53-й порт (UDP и
-// TCP) и уходит резолверу как DNS-over-TCP через SOCKS5; остальной UDP, ICMP и
-// IPv6 отбрасываются (см. Bridge).
+// TCP) и уходит резолверу как DNS-over-TCP через SOCKS5. Остальной UDP, ICMP и
+// IPv6 не проводятся, но и не пропадают молча: на них приходит ошибка ICMP
+// («порт недоступен» / «нет маршрута»), чтобы приложение сразу откатывалось на
+// TCP или IPv4, а не ждало собственного таймаута (см. Bridge, icmp.go).
 //
 // Пакет платформенный: устройство пакетов, маршруты и проверка прав лежат в
 // файлах с build tags. Всё, что можно проверить офлайн — мост, политика пакетов,
@@ -60,6 +62,9 @@ const (
 	// прежде чем остановить насос (живое устройство столько не даёт; один
 	// сбойный пакет не должен гасить весь системный туннель).
 	maxPumpFails = 100
+	// maxRejectPerSecond — предел ICMP-отказов в секунду: пачка мёртвых
+	// соединений не должна занимать насос устройства.
+	maxRejectPerSecond = 200
 )
 
 // ErrUnsupported — платформа не поддерживается (TUN и маршруты реализованы для
@@ -79,10 +84,11 @@ func (f DialFunc) DialContext(ctx context.Context, network, address string) (net
 type UDPPolicy string
 
 const (
-	// UDPDrop — отбрасывать (значение по умолчанию): через SOCKS5 доступен
-	// только TCP, поэтому QUIC (UDP/443) отбрасывается молча, чтобы приложения
-	// откатывались на TCP. Проброс UDP (игры, VoIP) пока не реализован —
-	// точка расширения — в Bridge.handleUDP.
+	// UDPDrop — не проводить (значение по умолчанию): через SOCKS5 доступен
+	// только TCP, поэтому QUIC (UDP/443) не проксируется, а в ответ уходит
+	// ICMPv4 «порт недоступен» — приложение откатывается на TCP сразу, а не
+	// после собственного таймаута. Проброс UDP (игры, VoIP) пока не
+	// реализован — точка расширения — в Bridge.handleUDP.
 	UDPDrop UDPPolicy = "drop"
 )
 
@@ -136,8 +142,13 @@ type Options struct {
 	// Точка адаптации: на Android права даёт VpnService, проверка не нужна.
 	CheckPrivileges func() error
 	// StateDir — каталог файлов состояния маршрутов для аварийного отката
-	// (пусто — ~/.warpgen/state; в тестах — подкаталог).
+	// (пусто — платформенный каталог состояния; в тестах — подкаталог).
 	StateDir string
+	// Force — откат без журнала (`tun-revert --force`): снять только то, что
+	// можно уверенно опознать как наше, — DNS из подсети TUN на физических
+	// интерфейсах и маршруты через warpgen-адаптер. Нужен, когда журнал
+	// потерян (портативную папку перенесли) или его не было.
+	Force bool
 	// Logf — приёмник служебных сообщений (nil — молча).
 	Logf func(format string, args ...any)
 }
@@ -328,6 +339,7 @@ func (t *SystemTunnel) Start(ctx context.Context, socks, endpoint string) (Statu
 		DialTimeout: t.opts.DialTimeout,
 		IdleTimeout: t.opts.IdleTimeout,
 		Resolver:    t.resolver.Effective,
+		Resolvers:   t.resolver.Candidates,
 		UDP:         t.opts.UDP,
 		Logf:        t.opts.Logf,
 	})

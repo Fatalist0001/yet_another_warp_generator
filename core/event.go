@@ -35,7 +35,7 @@ const (
 	// EventTunUp — системный TUN поднят, мост TUN→SOCKS работает (режим --tun).
 	EventTunUp Kind = "tun_up"
 	// EventRoutesApplied — маршруты (исключение endpoint'а, default через TUN,
-	// blackhole IPv6) применены.
+	// отсечение IPv6) применены.
 	EventRoutesApplied Kind = "routes_applied"
 	// EventRoutesReverted — маршруты и DNS возвращены в исходное состояние.
 	EventRoutesReverted Kind = "routes_reverted"

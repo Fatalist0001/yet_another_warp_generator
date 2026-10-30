@@ -71,8 +71,9 @@ type Options struct {
 	// выдал права, поэтому проверка подменяется на пустую.
 	TUNCheckPrivileges func() error
 	// TUNStateDir — каталог журнала маршрутов для аварийного отката
-	// (`tun-revert`). Пусто — ~/.warpgen/state; GUI на Windows передаёт
-	// каталог рядом с exe, чтобы данные оставались портативными.
+	// (`tun-revert`). Пусто — платформенный каталог состояния в профиле
+	// (Linux — ~/.warpgen/state, Windows — %LOCALAPPDATA%\warpgen\state):
+	// журнал не портативный, его нельзя терять вместе с папкой программы.
 	TUNStateDir string
 	// TUNProtect — защита исходящих сокетов от собственного VPN (Android:
 	// VpnService.protect). На Linux и Windows не нужна: петля закрыта

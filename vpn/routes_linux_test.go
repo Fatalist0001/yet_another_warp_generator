@@ -141,7 +141,7 @@ func applyCommands() []string {
 		"ip route replace 162.159.192.1/32 via 192.168.1.1 dev eth0",
 		"ip route replace 0.0.0.0/1 dev warpgen0",
 		"ip route replace 128.0.0.0/1 dev warpgen0",
-		"ip -6 route replace blackhole default",
+		"ip -6 route replace unreachable default",
 		"resolvectl dns eth0 198.18.0.1",
 		"resolvectl domain eth0 ~.",
 	}
@@ -151,7 +151,7 @@ func applyCommands() []string {
 func revertCommands() []string {
 	out := revertDNSCommands("eth0", []string{"192.168.1.1"}, nil)
 	return append(out,
-		"ip -6 route del blackhole default",
+		"ip -6 route del unreachable default",
 		"ip route del 128.0.0.0/1 dev warpgen0",
 		"ip route del 0.0.0.0/1 dev warpgen0",
 		"ip route del 162.159.192.1/32 via 192.168.1.1 dev eth0",

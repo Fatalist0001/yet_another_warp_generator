@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -272,19 +273,49 @@ func loadState(path string) ([]step, error) {
 }
 
 // statePath — путь к файлу состояния TUN-интерфейса. dir пуст — берём
-// ~/.warpgen/state (каталог создаёт saveState при записи).
+// platformStateDir (каталог создаёт saveState при записи).
 func statePath(dir, tunName string) (string, error) {
 	if tunName == "" || strings.ContainsAny(tunName, "/\\") {
 		return "", fmt.Errorf("vpn: имя интерфейса %q непригодно для файла состояния", tunName)
 	}
 	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("vpn: домашний каталог для файла состояния: %w", err)
-		}
-		dir = filepath.Join(home, ".warpgen", "state")
+		dir = platformStateDir()
 	}
 	return filepath.Join(dir, tunName+".st"), nil
+}
+
+// tunDNSSubnet — подсеть TUN (198.18.0.0/15). Адреса из неё warpgen отдаёт
+// системе как DNS, и в исправном состоянии они есть только на самом TUN.
+// Такой адрес на физическом интерфейсе — всегда наш остаток: без TUN на нём
+// никто не слушает, и разрешение имён перестаёт работать целиком.
+var tunDNSSubnet = netip.MustParsePrefix("198.18.0.0/15")
+
+// tunDNS сообщает, принадлежит ли адрес подсети TUN. Порт (если он есть) не
+// учитывается: серверы Windows приходят без него, а Linux может отдать «ip:53».
+func tunDNS(server string) bool {
+	host := strings.TrimSpace(server)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return tunDNSSubnet.Contains(addr)
+}
+
+// foreignDNS возвращает серверы, которые ставил не warpgen. Адреса из подсети
+// TUN отбрасываются: восстановить их — значит закрепить поломку, поэтому такой
+// сервер никогда не попадает ни в откат, ни в «прежние» настройки интерфейса.
+func foreignDNS(servers []string) []string {
+	out := make([]string, 0, len(servers))
+	for _, s := range servers {
+		if tunDNS(s) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func (r *record) warn(msg string) {
