@@ -25,6 +25,11 @@ check('внешние скрипты подключены',
   (html.match(/<script src="([^"]+)"/g) || []).length === 2,
   (html.match(/<script src="([^"]+)"/g) || []).join(' '));
 check('нет inline-скриптов', !/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/.test(bodyHtml));
+check('нет внешних запросов за ресурсами',
+  !/<link[^>]+href="https?:/.test(html) && !/@import/.test(css) && !/url\(['"]?https?:/.test(css));
+check('локальные файлы шрифтов на месте',
+  ['jbm-cyrillic.woff2', 'jbm-latin.woff2', 'sg-latin.woff2', 'sg-latin-ext.woff2']
+    .every(f => fs.existsSync(path.join(__dirname, 'fonts', f))));
 check('фигурные скобки CSS сбалансированы', css.split('{').length === css.split('}').length,
   css.split('{').length - 1 + ' правил');
 

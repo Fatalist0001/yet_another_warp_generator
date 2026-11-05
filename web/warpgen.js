@@ -151,7 +151,7 @@
 
   function i1DnsName(host) {
     var out = [];
-    var labels = host.replace(/^\./, '').split('.');
+    var labels = host.replace(/^\.+/, '').replace(/\.+$/, '').split('.');
     for (var i = 0; i < labels.length; i++) {
       var label = labels[i];
       if (label.length === 0 || label.length > dnsLabelMax) throw new Error('некорректная DNS-метка "' + label + '" в "' + host + '"');
@@ -438,7 +438,6 @@
   var EndpointPresets = {
     prefixes: [
       '162.159.192', '162.159.193',
-      '162.159.195',
       '188.114.96', '188.114.97', '188.114.98', '188.114.99'
     ],
     ports: [500, 1701, 4500, 2408],
@@ -579,8 +578,29 @@
       };
     }
 
+    function isIPv4(s) {
+      var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+      if (!m) return false;
+      for (var i = 1; i <= 4; i++) if (Number(m[i]) > 255) return false;
+      return true;
+    }
+
+    function isIPv6(s) {
+      if (s.indexOf(':') < 0 || !/^[0-9a-fA-F:]+$/.test(s)) return false;
+      if (s.indexOf(':::') >= 0) return false;
+      if (s === '::') return true;
+      var doubles = s.split('::').length - 1;
+      if (doubles > 1) return false;
+      var parts = s.split(':');
+      for (var i = 0; i < parts.length; i++) if (parts[i].length > 4) return false;
+      var nonEmpty = 0;
+      for (var j = 0; j < parts.length; j++) if (parts[j].length) nonEmpty++;
+      // «::» сжимает хотя бы одну группу; без него групп должно быть ровно 8.
+      return doubles === 1 ? nonEmpty <= 7 : nonEmpty === 8;
+    }
+
     function isIP(s) {
-      return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(s) || (s.indexOf(':') >= 0 && /^[0-9a-fA-F:.]+$/.test(s));
+      return typeof s === 'string' && (isIPv4(s) || isIPv6(s));
     }
 
     function isEndpoint(s) {

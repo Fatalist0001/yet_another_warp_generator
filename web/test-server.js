@@ -2,10 +2,25 @@
 // Запуск: node test-server.js
 const crypto = require('crypto');
 const dgram = require('node:dgram');
+const http = require('node:http');
 const fs = require('fs');
 const path = require('path');
 
 const srv = require('./dev-server.js');
+
+// Сырой GET без нормализации URL клиентской библиотекой: нужен, чтобы
+// проверить обработку битого percent-encoding.
+function rawGet(port, rawPath) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: rawPath, method: 'GET' }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 let failures = 0;
 function check(name, cond, extra) {
@@ -186,6 +201,7 @@ async function main() {
   const server = srv.createServer({
     root: __dirname,
     registerLimit: 2,
+    dnsLimit: 1,
     fetchImpl: fakeFetch([
       { match: '/v0a4005/reg/acc-1', body: {} },
       { match: '/v0a4005/reg', body: REG_OK }
@@ -208,6 +224,10 @@ async function main() {
   const dnsJs = await dns.json();
   check('/api/dns 200 + список', dns.status === 200 && Array.isArray(dnsJs.presets) && dnsJs.presets.length > 0);
   check('каждый пресет с ips/ok/rttMs', dnsJs.presets.every(p => Array.isArray(p.ips) && 'ok' in p && 'rttMs' in p));
+
+  const dnsLimited = await fetch(base + '/api/dns');
+  check('лимит проверок DNS → 429 RATE_LIMITED',
+    dnsLimited.status === 429 && (await dnsLimited.json()).code === 'RATE_LIMITED');
 
   const post = await fetch(base + '/api/warp', { method: 'POST' });
   check('POST /api/warp разрешён (ref2-стиль)', post.status === 200);
@@ -232,10 +252,19 @@ async function main() {
   const js = await fetch(base + '/warpgen.js');
   check('/warpgen.js отдаётся как JS', js.status === 200 &&
     (js.headers.get('content-type') || '').includes('javascript'));
+  const font = await fetch(base + '/fonts/jbm-latin.woff2');
+  check('шрифт отдаётся как font/woff2', font.status === 200 &&
+    (font.headers.get('content-type') || '').includes('font/woff2'));
   const trav = await fetch(base + '/../etc/passwd');
   check('выход за каталог закрыт', trav.status === 403 || trav.status === 404, String(trav.status));
   const missing = await fetch(base + '/nope.txt');
   check('нет файла → 404', missing.status === 404);
+
+  // Раньше decodeURIComponent бросал URIError, и процесс завершался.
+  const badUrl = await rawGet(server.address().port, '/%');
+  check('битый percent-encoding → 400', badUrl.status === 400, String(badUrl.status));
+  const stillAlive = await fetch(base + '/api/health');
+  check('после битого URL сервер продолжает отвечать', stillAlive.status === 200);
 
   server.close();
 

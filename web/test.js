@@ -153,10 +153,15 @@ async function main() {
   }));
   check('Jmax <= Jmin отклонён', !badJunk.ok, badJunk.errors.join('; '));
 
-  const badDns = await W.CONFIG.build({ account, endpoint: '1.2.3.4:500', dns: 'dns.example.invalid' });
   global.fetch = async () => ({ ok: false, status: 502, text: async () => 'bad gateway' });
   const badDns2 = await W.CONFIG.build({ account, endpoint: '1.2.3.4:500', dns: 'dns.example.invalid' });
   check('нерезолвящийся DNS — ошибка', !await W.CONFIG.generate(badDns2).ok, badDns2.dnsErrors.join('; '));
+
+  check('isIP: валидные IPv4/IPv6',
+    W.CONFIG.isIP('1.1.1.1') && W.CONFIG.isIP('2606:4700:110::1') && W.CONFIG.isIP('::1'));
+  check('isIP: 999.1.1.1 отклонён', !W.CONFIG.isIP('999.1.1.1'));
+  check('isIP: битый IPv6 отклонён',
+    !W.CONFIG.isIP(':::') && !W.CONFIG.isIP('1::2::3') && !W.CONFIG.isIP('1:2:3:4:5:6:7:8:9'));
 
   // ---------- 9. API-клиент ----------
   console.log('\n[9] API-клиент сервера');

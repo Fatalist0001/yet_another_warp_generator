@@ -9,7 +9,7 @@
   function $(id) { return document.getElementById(id); }
 
   // ---------- состояние (без секретов в UI/localStorage) ----------
-  var state = { account: null, dns: { id: null, ips: {} }, lastConf: '', loading: false };
+  var state = { account: null, dns: { id: null, ips: {}, checked: false }, lastConf: '', loading: false };
 
   // ---------- элементы ----------
   var els = {
@@ -94,7 +94,7 @@
          tag === 'warn' ? '[--]' :
          tag === 'err' ? '[err]' : '[info]') +
       '</span>' +
-      '<span class="msg">' + msg + '</span>';
+      '<span class="msg">' + escapeHtml(msg) + '</span>';
     els.statusBox.appendChild(line);
     els.statusBox.scrollTop = els.statusBox.scrollHeight;
     _statusN++;
@@ -136,7 +136,9 @@
   function fillDnsSelect(presets) {
     presets = presets || W.DNSPresets;
     els.dnsPreset.innerHTML = '';
+    var known = {};
     presets.forEach(function (p) {
+      known[p.id] = true;
       var op = document.createElement('option');
       op.value = p.id;
       var t = p.label;
@@ -145,6 +147,21 @@
       op.textContent = t;
       els.dnsPreset.appendChild(op);
     });
+    // «Свой DNS» — клиентский пресет: сервер проверяет только известные
+    // резолверы и может его не присылать. Без этого опция исчезала после
+    // первой проверки DNS.
+    if (!known.custom) {
+      var custom = null;
+      for (var i = 0; i < W.DNSPresets.length; i++) {
+        if (W.DNSPresets[i].id === 'custom') { custom = W.DNSPresets[i]; break; }
+      }
+      if (custom) {
+        var cop = document.createElement('option');
+        cop.value = custom.id;
+        cop.textContent = custom.label;
+        els.dnsPreset.appendChild(cop);
+      }
+    }
   }
 
   function updateDnsUI() {
@@ -181,7 +198,10 @@
   }
 
   // Проверка DNS выполняется сервером; живые IP запоминаем для подстановки.
-  function dnsPresets() {
+  // opts.keepSelection — не переключать выбранный пользователем пресет
+  // (нужно при автоматической проверке перед генерацией).
+  function dnsPresets(opts) {
+    opts = opts || {};
     els.dnsPreset.disabled = true;
     els.dnsState.textContent = 'проверка…';
     els.dnsList.classList.add('hidden');
@@ -195,11 +215,19 @@
       });
       var alive = 0;
       var firstAlive = null;
+      var selectable = {};
       presets.forEach(function (p) {
-        if (p.ok) { alive++; if (!firstAlive) firstAlive = p; }
+        if (p.ok) {
+          selectable[p.id] = true;
+          alive++;
+          if (!firstAlive) firstAlive = p;
+        }
       });
+      var selected = els.dnsPreset.value;
       fillDnsSelect(presets);
-      if (firstAlive) {
+      if (opts.keepSelection && selected && (selectable[selected] || selected === 'custom')) {
+        els.dnsPreset.value = selected;
+      } else if (firstAlive) {
         els.dnsPreset.value = firstAlive.id;
         localStorage.setItem('warpgen_dns', firstAlive.id);
       }
@@ -209,11 +237,15 @@
       els.dnsState.textContent = 'проверено: ' + alive + ' из ' + presets.length;
       statusLine('DNS проверены: живых ' + alive + ' из ' + presets.length +
         ' — в конфиг подставляются ответившие IP', alive ? 'ok' : 'warn');
+      state.dns.checked = true;
       return presets;
     }).catch(function (e) {
       els.dnsState.textContent = 'не удалось';
       statusLine('Проверка DNS не удалась: ' + apiErrorText(e) +
         '. Пресет останется: адреса впишутся без проверки.', 'warn');
+      // Не повторяем автоматически на каждой генерации: ручная кнопка
+      // «проверить» по-прежнему доступна.
+      state.dns.checked = true;
       return null;
     }).then(function (r) {
       els.dnsPreset.disabled = false;
@@ -357,8 +389,13 @@
     els.genBtn.textContent = 'генерирую…';
     clearStatus();
 
+    // «Одна кнопка»: аккаунт и проверка DNS идут параллельно. Без проверки
+    // DNS пришлось бы резолвить хостнеймы через DoH (в РФ он может быть
+    // недоступен), поэтому серверный список IP — основной путь.
     var accP = state.account ? Promise.resolve(state.account) : doAccount();
-    return accP.then(function (acc) {
+    var dnsP = state.dns.checked ? Promise.resolve(null) : dnsPresets({ keepSelection: true });
+    return Promise.all([accP, dnsP]).then(function (ready) {
+      var acc = ready[0];
       if (!acc) {
         statusLine('аккаунт недоступен — конфиг не собран', 'err');
         return null;
@@ -388,11 +425,11 @@
         els.paramMtu.textContent = 'MTU ' + input.mtu;
         els.paramI1.textContent = 'I1: ' + input.i1Profile;
         els.confBlock.classList.remove('hidden');
-        var warnHtml = '';
+        var warnText = '';
         if (res.warnings && res.warnings.length) {
-          warnHtml = '<div class="note">Внимание: ' + res.warnings.map(escapeHtml).join('; ') + '</div>';
+          warnText = ' — внимание: ' + res.warnings.join('; ');
         }
-        statusLine('конфиг готов — скопируйте или скачайте' + warnHtml,
+        statusLine('конфиг готов — скопируйте или скачайте' + warnText,
           res.warnings && res.warnings.length ? 'warn' : 'ok');
         return res;
       });
@@ -457,9 +494,15 @@
     });
     els.i1HostRow.classList.toggle('hidden', localStorage.getItem('warpgen_i1profile') !== 'quic');
     fillDnsSelect();
+    var savedDns = localStorage.getItem('warpgen_dns');
+    if (savedDns) els.dnsPreset.value = savedDns;
     updateReadout();
     updateDnsUI();
-    els.dnsPreset.addEventListener('change', function () { updateDnsUI(); updateReadout(); });
+    els.dnsPreset.addEventListener('change', function () {
+      localStorage.setItem('warpgen_dns', els.dnsPreset.value);
+      updateDnsUI();
+      updateReadout();
+    });
 
     els.endpoint.addEventListener('input', updateReadout);
     els.dnsCustom.addEventListener('input', updateReadout);

@@ -188,11 +188,17 @@ check('живые IP сохранены для подстановки', page.sta
 check('список DNS отрисован', !els.dnsList.classList.contains('hidden') && els.dnsList.innerHTML.includes('1.2.3.4'));
 check('мёртвый адрес не в списке', !els.dnsList.innerHTML.includes('6.6.6.6'));
 check('состояние «проверено»', els.dnsState.textContent === 'проверено: 1 из 2');
+check('«Свой DNS» не пропал после проверки', els.dnsPreset.innerHTML.includes('Свой DNS'));
 
 // ---------- 4. генерация конфига ----------
 console.log('\n[4] Генерация .conf');
 els.endpoint.value = '162.159.192.1:2408';
+const dnsCallsBefore = global.__calls.filter(u => u.endsWith('/api/dns')).length;
+page.state.dns.checked = false;
 await els.genBtn.click();
+check('генерация сама проверяет DNS (один запрос)',
+  global.__calls.filter(u => u.endsWith('/api/dns')).length === dnsCallsBefore + 1);
+check('выбранный DNS сохранён после авто-проверки', els.dnsPreset.value === 'comss', els.dnsPreset.value);
 const c1 = conf();
 check('конфиг в поле вывода', c1.startsWith('[Interface]'), c1.split('\n')[0]);
 check('PrivateKey = ключ сервера', c1.includes('PrivateKey = ' + ACC.privKey));
@@ -274,6 +280,14 @@ page.state.account = null;
 await els.accBtn.click();
 check('нет сети → понятное сообщение', statusHtml().includes('сервис недоступен'), statusHtml().slice(0, 140));
 check('состояние «ошибка»', els.accState.textContent === 'ошибка');
+
+global.fetch = async () => ({
+  ok: false, status: 500,
+  text: async () => JSON.stringify({ error: '<img src=x onerror=alert(1)>', code: 'XSS' })
+});
+await els.accBtn.click();
+check('HTML из ответа API экранирован в логе',
+  !statusHtml().includes('<img') && statusHtml().includes('&lt;img'), statusHtml().slice(-160));
 
 if (failures) throw new Error('провалено проверок: ' + failures);
 console.log('\nDOM TEST PASSED');

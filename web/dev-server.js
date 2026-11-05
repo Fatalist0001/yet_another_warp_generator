@@ -246,7 +246,9 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
-  '.png': 'image/png'
+  '.png': 'image/png',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff'
 };
 
 function send(res, status, body, headers) {
@@ -272,21 +274,30 @@ function createServer(opts) {
     log: () => {}
   }, opts || {});
 
-  // Простой лимит: не больше `limit` регистраций в минуту на IP.
-  const rate = new Map();
+  // Простые лимиты: регистрации и проверки DNS в минуту на IP.
+  // Ключи разные, чтобы активная проверка DNS не съедала лимит регистраций.
+  const warpRate = new Map();
+  const dnsRate = new Map();
   const LIMIT = options.registerLimit || 10;
+  const DNS_LIMIT = options.dnsLimit || 30;
 
-  function allowed(ip) {
+  function allowed(rate, ip, limit) {
     const now = Date.now();
     const hits = (rate.get(ip) || []).filter((t) => now - t < 60000);
-    if (hits.length >= LIMIT) return false;
+    if (hits.length >= limit) return false;
     hits.push(now);
     rate.set(ip, hits);
     return true;
   }
 
-  return http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://localhost');
+  async function handle(req, res) {
+    let url;
+    try {
+      url = new URL(req.url, 'http://localhost');
+    } catch (e) {
+      // Некорректный запрос не должен ронять процесс.
+      return sendJSON(res, 400, { error: 'некорректный URL', code: 'BAD_REQUEST' });
+    }
     const ip = req.socket.remoteAddress || 'unknown';
     options.log(req.method, url.pathname);
 
@@ -301,7 +312,7 @@ function createServer(opts) {
 
     if (url.pathname === '/api/warp') {
       if (req.method !== 'GET' && req.method !== 'POST') return sendJSON(res, 405, { error: 'только GET', code: 'METHOD_NOT_ALLOWED' });
-      if (!allowed(ip)) return sendJSON(res, 429, { error: 'слишком много запросов, подождите минуту', code: 'RATE_LIMITED' });
+      if (!allowed(warpRate, ip, LIMIT)) return sendJSON(res, 429, { error: 'слишком много запросов, подождите минуту', code: 'RATE_LIMITED' });
       try {
         const acc = await registerAccount(options);
         return sendJSON(res, 200, acc);
@@ -318,6 +329,7 @@ function createServer(opts) {
 
     if (url.pathname === '/api/dns') {
       if (req.method !== 'GET') return sendJSON(res, 405, { error: 'только GET', code: 'METHOD_NOT_ALLOWED' });
+      if (!allowed(dnsRate, ip, DNS_LIMIT)) return sendJSON(res, 429, { error: 'слишком много проверок DNS, подождите минуту', code: 'RATE_LIMITED' });
       try {
         const presets = await dnsReport(options);
         return sendJSON(res, 200, { presets });
@@ -329,13 +341,33 @@ function createServer(opts) {
     if (url.pathname === '/api/health') return sendJSON(res, 200, { ok: true, service: 'warpgen-web-dev' });
 
     // Статика.
-    let rel = decodeURIComponent(url.pathname);
+    let rel;
+    try {
+      rel = decodeURIComponent(url.pathname);
+    } catch (e) {
+      // Битый percent-encoding (%/%) — это ошибка клиента, а не падение сервера.
+      return sendJSON(res, 400, { error: 'некорректный путь', code: 'BAD_REQUEST' });
+    }
     if (rel === '/' || rel === '') rel = '/index.html';
     const file = path.join(options.root, path.normalize(rel).replace(/^([/\\])+/, ''));
     if (!file.startsWith(options.root)) return send(res, 403, 'forbidden', { 'Content-Type': 'text/plain; charset=utf-8' });
     fs.readFile(file, (err, data) => {
       if (err) return send(res, 404, 'not found', { 'Content-Type': 'text/plain; charset=utf-8' });
       send(res, 200, data, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    });
+  }
+
+  return http.createServer((req, res) => {
+    // Ловим любые необработанные ошибки: один плохой запрос не должен
+    // завершать весь дев-сервер (и оставлять висеть соединение).
+    handle(req, res).catch((e) => {
+      options.log('server error:', (e && e.message) || String(e));
+      try {
+        if (!res.headersSent) sendJSON(res, 500, { error: 'внутренняя ошибка сервера', code: 'INTERNAL' });
+        else res.destroy();
+      } catch (ignored) {
+        try { res.destroy(); } catch (alsoIgnored) { /* соединение уже закрыто */ }
+      }
     });
   });
 }
