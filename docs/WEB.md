@@ -8,7 +8,7 @@
 ```
 браузер                    сервер                      Cloudflare
 ────────                   ──────                      ──────────
-GET /api/warp      →  POST /reg {key: наш pub}   →  аккаунт WARP
+POST /api/warp     →  POST /reg {key: наш pub}   →  аккаунт WARP
                    ←  PATCH /reg/{id} warp_enabled
                    ←  {privKey, peer_pub, client_ipv4, client_ipv6}
 GET /api/dns       →  resolve4 + UDP-запрос к резолверу
@@ -29,15 +29,18 @@ GET /api/dns       →  resolve4 + UDP-запрос к резолверу
 | `app.js` | логика страницы: связь UI с `window.Warpgen`, настройки в `localStorage`, экспорт `window.__warpgen` для тестов |
 | `warpgen.js` | `window.Warpgen`: X25519, I1-генераторы, `CONFIG` (сборка/валидация), `API`-клиент, пресеты |
 | `fonts/` | локальные WOFF2 (JetBrains Mono, Space Grotesk) и лицензии SIL OFL — без запросов к CDN |
+| `embed.go` | `go:embed` статики: боевой сервер не зависит от рабочего каталога |
 | `dev-server.js` | локальный эталон бэкенда (Node, без зависимостей) для ручной проверки |
+| `../webserver/` | боевой бэкенд на Go: `warpgen web`, HTTPS/прокси, CORS, лимиты |
 | `test.js` | офлайн-тесты ядра: ключи, I1, валидация, API-клиент, расшифровка QUIC |
 | `test-dom.js` | офлайн-тест страницы на DOM-стабе: аккаунт → DNS → генерация → ошибки |
 | `test-css.js` | статический аудит `index.html`: неопределённые `var(--…)`, классы без правил, дубли/пропажи `id`, `.hidden`, `type` у кнопок |
 | `test-server.js` | офлайн-тесты бэкенда: регистрация (фейковый fetch), UDP-проверка на loopback, HTTP-контракт |
 
-Тесты: `make web-test` (или `cd web && node test.js && node test-dom.js && node
-test-css.js && node test-server.js`). Сеть не нужна: `fetch` подменён, UDP ходит
-на loopback.
+Тесты: `make web-test` — JS-наборы (`cd web && node test.js && node test-dom.js
+&& node test-css.js && node test-server.js`) плюс офлайн-тесты боевого
+`webserver/`. Сеть не нужна: `fetch` подменён, UDP ходит на loopback,
+регистрация/резолвер/проба DNS в Go-тестах — фейки.
 
 `test-css.js` появился не зря: DOM-стаб не читает CSS, поэтому «класс в разметке
 есть, а правила нет» и «`var(--x)` не объявлена» проходили незамеченными и
@@ -74,24 +77,109 @@ MTU/keepalive, DNS, формат вывода) живут в выезжающе�
 Базовый адрес API — тот же origin, откуда открыта страница. Если страница
 лежит на другом хосте, чем API, адрес задаётся параметром
 `?api=http://127.0.0.1:8080` (в настройках поля нет — URL виден в адресной
-строке и не «теряется» в `localStorage`).
+строке и не «теряется» в `localStorage`). CSP боевого сервера разрешает
+`connect-src` только свой origin, DoH и `--allowed-origins`; если страница
+ходит к отдельному API, добавьте его origin в allowlist страницы (или отдайте
+страницу с хоста, чья CSP это разрешает).
 
-`dev-server.js` — **эталон для проверки**, а не продакшен: в нём нет
-постоянного хранилища (аккаунт живёт в пределах запроса), лимиты — 10
-регистраций и 30 проверок DNS в минуту на IP, TLS не настроен. CORS здесь
-`*`, а `/api/warp` — обычный GET, поэтому боевой хостинг обязан ограничить
-origin, включить HTTPS и добавить антиабуз (капчу/квоты): иначе любой сайт
-сможет создавать аккаунты через ваш сервер и жечь лимит Cloudflare. Боевой
-бэкенд должен отдавать тот же контракт из Go-кода этого репозитория
-(`registration.Register` + `dnscheck`-подобная проверка), иначе сайт получит
-вторую реализацию логики.
+`dev-server.js` — **эталон для проверки**, а не продакшен: в нём CORS `*`, нет
+TLS и постоянного хранилища. Он оставлен для быстрой локальной итерации над
+интерфейсом. Публичный хостинг запускается командой `warpgen web`: тот же
+контракт, но логика регистрации и DNS берётся из Go-пакетов `registration`,
+`config` и `dnscheck`, а не дублируется в JS.
+
+## Боевой запуск
+
+```bash
+make build
+./warpgen web --listen 127.0.0.1:8080
+```
+
+Для публичного домена есть два варианта.
+
+**За reverse proxy (рекомендуется).** Прокси терминирует TLS, а `warpgen web`
+слушает loopback:
+
+```bash
+./warpgen web --listen 127.0.0.1:8080 --trust-proxy --hsts
+```
+
+Минимальный Caddyfile (Caddy сам получает сертификат и выставляет
+`X-Forwarded-*`):
+
+```caddyfile
+warp.example.org {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Nginx должен передавать `Host`, `X-Forwarded-Proto`, `X-Forwarded-For` и
+`X-Forwarded-Host`; без `--trust-proxy` сервер эти заголовки игнорирует.
+
+`--trust-proxy` означает «верить `CF-Connecting-IP` / `X-Forwarded-For`,
+`X-Forwarded-Proto` и `X-Forwarded-Host`». Включать его можно только тогда, когда перед сервером
+стоит **свой** прокси, который сам выставляет эти заголовки: иначе клиент
+подделает IP и обойдёт лимиты. Если страница и API на разных origin'ах,
+добавьте origin страницы в allowlist:
+
+```bash
+./warpgen web --listen 127.0.0.1:8080 --trust-proxy --hsts \
+  --allowed-origins https://warp.example.org
+```
+
+**Напрямую с TLS.** Сертификат и ключ — PEM:
+
+```bash
+./warpgen web --listen :443 \
+  --tls-cert /etc/letsencrypt/live/example.org/fullchain.pem \
+  --tls-key  /etc/letsencrypt/live/example.org/privkey.pem
+```
+
+Что уже сделано для публичного запуска:
+
+- `/api/warp` — только `POST` с `Content-Type: application/json`; чужой
+  `Origin` получает `403`, поэтому браузерная CSRF-форма не создаст аккаунт.
+  `GET` возвращает `405`, а не меняет состояние.
+- CORS по умолчанию только same-origin; `--allowed-origins` задаёт точный
+  список. Заголовок `Access-Control-Allow-Origin` не бывает `*`.
+- Лимиты: 10 регистраций/мин на IP, 60/час на IP, 60/мин всего, 30 проверок
+  DNS/мин на IP (`--register-limit`, `--register-hour-limit`,
+  `--register-global-limit`, `--dns-limit`). Плюс `--max-inflight` ограничивает
+  одновременные регистрации, чтобы всплеск не открывал сотни запросов к
+  Cloudflare.
+- Отчёт DNS кэшируется на 60 секунд (`--dns-cache`), поэтому обновление
+  страницы не запускает UDP-проверки заново.
+- Security-заголовки: CSP (без внешних скриптов, шрифты только локальные),
+  `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options: DENY`,
+  `Permissions-Policy`, HSTS при TLS/`--hsts`.
+- Таймауты HTTP-сервера, лимит тела запроса (1 КиБ), graceful shutdown по
+  SIGINT/SIGTERM, журнал без query/тел/ключей.
+- Аккаунты не хранятся: приватный ключ живёт только в ответе на запрос.
+  В журнал уходят метод, путь, статус и длительность — без ключей.
+
+Серверу нужны исходящие HTTPS к `api.cloudflareclient.com` (регистрация) и
+UDP/53 к резолверам (проверка DNS). Если UDP/53 закрыт, `/api/dns` вернёт
+пресеты с `ok:false` — это сеть хостинга, а не ошибка кода.
+
+Ограничения, которые остаются у любого одиночного процесса:
+
+- лимиты и кэш DNS — в памяти, сбрасываются при перезапуске и не общие для
+  нескольких инстансов; для кластера нужен общий WAF/Redis или один инстанс;
+- мотивированный абузер с большим пулом IP всё равно упрётся только в
+  глобальный лимит. Для большого публичного сайта поставьте перед сервисом
+  Cloudflare/WAF и квоты на `/api/warp`;
+- TLS-сертификаты не обновляются автоматически: используйте reverse proxy
+  (Caddy/nginx) или внешний ACME-клиент.
 
 ## Контракт API
 
-### `GET /api/warp`
+### `POST /api/warp`
 
 Регистрирует новый WARP-аккаунт и возвращает ключи (как в
-[warp-generation](https://warp-generation.github.io)):
+[warp-generation](https://warp-generation.github.io)). Тело запроса — `{}`,
+заголовок `Content-Type: application/json`. Регистрация меняет состояние на
+стороне Cloudflare, поэтому метод небезопасный: так браузер не отправит запрос
+с чужого сайта без CORS-разрешения.
 
 ```json
 {
@@ -103,17 +191,23 @@ origin, включить HTTPS и добавить антиабуз (капчу/
 ```
 
 `privKey` генерирует сервер (X25519), Cloudflare его не возвращает — его нужно
-отдать клиенту один раз. `POST` поддерживается наравне с `GET` (некоторые
-клиенты шлют `{publicKey}`, но сервер его игнорирует: ключ создаёт он сам).
+отдать клиенту один раз. Тело `{}` сервер не читает: ключ создаёт он сам.
 
 Ошибки — всегда JSON с `code`:
 
 | Код | HTTP | Значение |
 |---|---|---|
-| `RATE_LIMITED` | 429 | слишком много регистраций (`HTTP 429: error code: 1015` от Cloudflare — то же самое) |
+| `RATE_LIMITED` | 429 | слишком много регистраций (локальный лимит или `HTTP 429: error code: 1015` от Cloudflare) |
+| `UPSTREAM_TIMEOUT` | 504 | Cloudflare не ответил вовремя (таймаут клиента 15 с) |
 | `UPSTREAM_UNAVAILABLE` | 503 | Cloudflare недоступен с сервера (нет сети/блокировка) |
-| `REGISTRATION_FAILED` | 502/503 | Cloudflare ответил ошибкой на `/reg` |
-| `METHOD_NOT_ALLOWED` | 405 | не GET/POST |
+| `REGISTRATION_FAILED` | 502 | Cloudflare ответил ошибкой на `/reg` |
+| `SERVER_BUSY` | 503 | исчерпан `--max-inflight`; повторите через несколько секунд |
+| `ORIGIN_NOT_ALLOWED` | 403 | `Origin` не совпал с собственным или allowlist |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | нет `Content-Type: application/json` |
+| `REQUEST_TOO_LARGE` | 413 | тело запроса больше 1 КиБ |
+| `BAD_REQUEST` | 400 | тело не удалось прочитать |
+| `METHOD_NOT_ALLOWED` | 405 | не POST; в `Allow` — разрешённый метод |
+| `NOT_FOUND` | 404 | нет такого файла или пути |
 
 ### `GET /api/dns`
 
@@ -143,10 +237,15 @@ origin, включить HTTPS и добавить антиабуз (капчу/
 опция: сервер её не присылает, поэтому страница добавляет её в список сама
 (иначе она исчезала после первой проверки).
 
-Дополнительно: `GET /api/health` → `{"ok":true}`, `OPTIONS *` → 204 с
-CORS-заголовками (страница может быть на другом хосте, чем API). Лимиты
-эталонного сервера — 10 регистраций и 30 проверок DNS в минуту на IP; битый
-percent-encoding в пути возвращает `400 BAD_REQUEST` и не роняет процесс.
+Отчёт кэшируется на 60 секунд: повторные открытия страницы не дёргают
+резолверы. В `warpgen web` лимит — 30 проверок DNS в минуту на IP; кэш-hit
+лимит не расходует.
+
+Дополнительно: `GET /api/health` → `{"ok":true,"service":"warpgen-web",...}`,
+`OPTIONS /api/*` → 204 с CORS-заголовками для разрешённого origin.
+`warpgen web` отвечает `404` на незнакомые пути (никакого directory listing и
+выхода за каталог), а `dev-server.js` при битом percent-encoding возвращает
+`400 BAD_REQUEST` и не роняет процесс.
 
 ## Что собирается в браузере
 

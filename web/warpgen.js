@@ -8,7 +8,7 @@
  * Контракт сервера (реализации — любая, эталон для локальной проверки —
  * `web/dev-server.js`):
  *
- *   GET  <base>/api/warp
+ *   POST <base>/api/warp   (Content-Type: application/json, тело {})
  *        200 {"privKey":"...","peer_pub":"...","client_ipv4":"172.16.0.2",
  *             "client_ipv6":"2606:4700:110:...","endpoint":"162.159.192.1:2408"}
  *        4xx/5xx {"error":"...","code":"RATE_LIMITED|UPSTREAM_UNAVAILABLE|..."}
@@ -486,11 +486,24 @@
       var url = baseUrl() + path;
       var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
       var timer = controller ? setTimeout(function () { controller.abort(); }, opts.timeout || 25000) : null;
+      var headers = { 'Accept': 'application/json' };
+      if (opts.headers) {
+        for (var key in opts.headers) {
+          if (Object.prototype.hasOwnProperty.call(opts.headers, key)) headers[key] = opts.headers[key];
+        }
+      }
+      var hasContentType = Object.keys(headers).some(function (key) {
+        return key.toLowerCase() === 'content-type';
+      });
+      if (opts.body !== undefined && opts.body !== null && !hasContentType) {
+        headers['Content-Type'] = 'application/json';
+      }
       var resp;
       try {
         resp = await fetch(url, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
+          method: opts.method || 'GET',
+          headers: headers,
+          body: opts.body,
           signal: controller ? controller.signal : undefined,
           cache: 'no-store'
         });
@@ -514,9 +527,11 @@
       return js;
     }
 
-    // Аккаунт WARP: ключи и адреса выдаёт сервер.
+    // Аккаунт WARP: ключи и адреса выдаёт сервер. POST, а не GET: регистрация
+    // меняет состояние на стороне Cloudflare, и браузерная CSRF-защита
+    // (Origin + JSON Content-Type) работает только с небезопасным методом.
     async function account() {
-      var js = await request('/api/warp');
+      var js = await request('/api/warp', { method: 'POST', body: '{}', timeout: 30000 });
       var a = js.registration || js;
       var acc = {
         privateKey: a.privKey || a.privateKey || '',

@@ -178,6 +178,20 @@ check('аккаунт отрисован (endpoint/IPv4/IPv6/PublicKey)', els.ac
 check('состояние «готов»', els.accState.textContent === 'готов', els.accState.textContent);
 check('запрос ушёл на /api/warp', global.__calls.some(u => u.endsWith('/api/warp')));
 
+// Сервер не обязан выбирать endpoint: поле не должно затираться пустой строкой.
+const savedFetch = global.fetch;
+global.fetch = async () => {
+  const noEp = Object.assign({}, ACC);
+  delete noEp.endpoint;
+  return { ok: true, status: 200, text: async () => JSON.stringify(noEp) };
+};
+const endpointBefore = els.endpoint.value;
+page.state.account = null;
+await els.accBtn.click();
+check('ответ без endpoint не затирает поле', els.endpoint.value === endpointBefore && els.endpoint.value !== '',
+  els.endpoint.value);
+global.fetch = savedFetch;
+
 // ---------- 3. DNS ----------
 console.log('\n[3] Проверка DNS');
 await els.accDnsBtn.click();

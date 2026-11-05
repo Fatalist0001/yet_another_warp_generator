@@ -25,9 +25,10 @@ make fmt              # gofmt -l . (показать неотформатиро�
 make checks           # vet + fmt + test
 make test-integration # реальная сеть, за флагом (в CI не гонять)
 make test-e2e         # сетевые проверки пайплайна run (тег e2e, вручную)
-make web-test         # офлайн-тесты веб-генератора (Node, без сети)
-make web-serve        # локальный бэкенд сайта: статика + /api/warp + /api/dns
-make web-kill         # остановить сервер, запущенный через web-serve
+make web-test         # офлайн-тесты веб-генератора (Node + Go, без сети)
+make web-serve        # локальный эталон бэкенда: статика + /api/warp + /api/dns
+make web-prod         # боевой Go-сервер: ./warpgen web (HTTPS/прокси, лимиты)
+make web-kill         # остановить dev-сервер, запущенный через web-serve
 make gui-deps         # flutter pub get для gui/
 make gui-test         # офлайн-тесты GUI (фейковые процессы, без сети)
 make gui-test-live    # live-e2e GUI: сеть, настоящий CLI и SOCKS5
@@ -73,10 +74,11 @@ GOPROXY=off go test ./... -short
 | `core/` | пайплайн команды `run`: автомат состояний (endpoint → туннель → форвардер → страны → мониторинг), UDP-форвардер, поток событий |
 | `vpn/` | системный туннель `run --tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и откат (Linux) |
 | `services/` | проверка доступности сервисов через SOCKS5 (без влияния на туннель) |
-| `cli/` | CLI-команды `register`, `scan`, `dns-check`, `dns-presets`, `dns-current`, `services`, `gen`, `chain`, `run`, `tun-revert` |
+| `cli/` | CLI-команды `register`, `scan`, `dns-check`, `dns-presets`, `dns-current`, `services`, `gen`, `chain`, `run`, `tun-revert`, `web` |
 | `cmd/warpgen/` | точка входа, версия (подставляется через ldflags) |
 | `gui/` | Flutter/GUI для Linux и Windows (Material You): обёртка над CLI, своей сетевой логики нет |
-| `web/` | веб-генератор `.conf`: сервер регистрирует WARP (`/api/warp`), конфиг с I1 собирается в браузере; `dev-server.js` — локальный эталон бэкенда |
+| `webserver/` | боевой HTTP-сервер веб-генератора: статика из `web/`, POST `/api/warp`, `/api/dns`, TLS/прокси, CORS, лимиты |
+| `web/` | веб-генератор `.conf`: статика и JS-ядро, `dev-server.js` — локальный эталон бэкенда, `embed.go` — встраивание статики в бинарник |
 
 Правило: логика — в пакетах, `cli/` только собирает их вместе и печатает.
 Внутренние детали (`internal/`) не заводим — это локальный инструмент.
@@ -225,15 +227,36 @@ GOPROXY=off go test ./... -short
 - Раскладка: `index.html` (разметка и стили: одна кнопка, панель настроек
   слева, нижний sheet с результатом) + `app.js` (связка UI с ядром,
   настройки в `localStorage`, экспорт `window.__warpgen` для тестов) +
-  `warpgen.js` (`window.Warpgen` — ядро), `dev-server.js` — эталон бэкенда
-  для локальной проверки. Продакшен-бэкенд должен отдавать тот же контракт
-  из Go (`registration.Register` + проверка DNS), а не переписывать
-  регистрацию в JS.
-- Аккаунт WARP регистрирует **сервер** (`GET /api/warp` →
+  `warpgen.js` (`window.Warpgen` — ядро), `embed.go` (статика для боевого
+  сервера), `dev-server.js` — эталон бэкенда для локальной проверки.
+  Публичный хостинг — `warpgen web` (пакет `webserver/`): та же логика из
+  Go (`registration` + `config` + `dnscheck`), а не вторая реализация в JS.
+- Аккаунт WARP регистрирует **сервер** (`POST /api/warp` с
+  `Content-Type: application/json` и телом `{}` →
   `{privKey, peer_pub, client_ipv4, client_ipv6}`, ключ создаёт сервер). Конфиг
   собирается **в браузере**: I1, junk, инварианты. Приватный ключ в
   `localStorage` не пишется и в интерфейсе не показывается — ручного ввода
-  аккаунта в UI нет вообще.
+  аккаунта в UI нет вообще. `GET /api/warp` в боевом сервере обязан отвечать
+  `405`: регистрация меняет состояние, GET оставлять нельзя.
+- `webserver/` — не «вторая логика», а обвязка: `web/embed.go` отдаёт статику,
+  `registration.Register` регистрирует аккаунт, `config.DNSPresets` даёт
+  список DNS, `dnscheck.Check` через обычный UDP-дозвонщик проверяет
+  резолверы. Тесты `webserver/` офлайн: `registration`, резолвер и проба
+  подменяются через `Config.RegisterFunc` / `Resolve4Func` / `ProbeDNSFunc`.
+- Безопасность веб-сервера — инвариант: CORS по умолчанию только same-origin
+  (`--allowed-origins` — точный список, никакого `*`), проверка `Origin` для
+  `/api/*`, POST-only и `application/json` для регистрации, rate limit на IP и
+  глобальный, `--max-inflight`, кэш DNS, CSP без внешних скриптов, HSTS при
+  TLS/`--hsts`, лимит тела, таймауты и graceful shutdown. `--trust-proxy`
+  включает доверие `CF-Connecting-IP`/`X-Forwarded-For`/`X-Forwarded-Proto`/
+  `X-Forwarded-Host` только за своим прокси; без него заголовки не читаются. Ключи и тела
+  запросов в журнал не попадают.
+- Публичный сервер не хранит аккаунты и не пишет ключи на диск. Лимиты и кэш
+  DNS — в памяти процесса; для нескольких инстансов нужен внешний WAF/Redis,
+  это ограничение задокументировано в `docs/WEB.md`.
+- `dev-server.js` остаётся эталоном для локальной итерации, но он не
+  продакшен: CORS `*`, нет TLS, лимиты не глобальные. Не переносить его
+  послабления в `webserver/`.
 - `GET /api/dns` отдаёт пресеты `config/dns_presets.go` с разрешёнными IP и
   признаком живости (`ok`, `rttMs`, `liveIps`) — сервер проверяет **сами
   резолверы** обычным UDP-запросом, не через туннель. У имени бывает несколько
@@ -242,8 +265,9 @@ GOPROXY=off go test ./... -short
   будет ждать мёртвый сервер. Групповой пресет жив, если жив хотя бы один хост.
   `doGenerate` при первом клике запускает эту проверку параллельно с получением
   аккаунта (с сохранением выбранного пресета); DoH — только запасной путь.
-- Ошибки API — JSON с `code` (`RATE_LIMITED`, `UPSTREAM_UNAVAILABLE`,
-  `REGISTRATION_FAILED`, `BAD_RESPONSE`, `NETWORK_ERROR`); интерфейс обязан
+- Ошибки API — JSON с `code` (`RATE_LIMITED`, `UPSTREAM_TIMEOUT`,
+  `UPSTREAM_UNAVAILABLE`, `REGISTRATION_FAILED`, `SERVER_BUSY`,
+  `ORIGIN_NOT_ALLOWED`, `BAD_RESPONSE`, `NETWORK_ERROR`); интерфейс обязан
   показывать код и подсказку, а не «ошибка».
 - Инварианты WARP-safe те же, что в `config` (`S1..S4`, `H1..H4`, `MTU`,
   `PersistentKeepalive` в `[Peer]`, заглавный `I1`, порядок полей, только IP в

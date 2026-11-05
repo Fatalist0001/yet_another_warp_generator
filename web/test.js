@@ -170,13 +170,20 @@ async function main() {
     text: async () => JSON.stringify(obj)
   });
 
-  global.fetch = async () => jsonResp(200, {
-    privKey: account.privateKey, peer_pub: account.serverPublicKey,
-    client_ipv4: '172.16.0.2/32', client_ipv6: '2606:4700::1/128', endpoint: '162.159.192.1:2408'
-  });
+  let accountReq = null;
+  global.fetch = async (url, opts) => {
+    accountReq = { url: String(url), opts: opts };
+    return jsonResp(200, {
+      privKey: account.privateKey, peer_pub: account.serverPublicKey,
+      client_ipv4: '172.16.0.2/32', client_ipv6: '2606:4700::1/128', endpoint: '162.159.192.1:2408'
+    });
+  };
   const acc = await W.API.account();
   check('account(): контракт ref1', acc.privateKey === account.privateKey &&
     acc.serverPublicKey === account.serverPublicKey && acc.addressV4 === '172.16.0.2/32');
+  check('account(): POST + JSON (CSRF-безопасный метод)',
+    accountReq && accountReq.opts.method === 'POST' && accountReq.opts.body === '{}' &&
+    accountReq.opts.headers['Content-Type'] === 'application/json');
 
   global.fetch = async () => jsonResp(200, {
     success: true,

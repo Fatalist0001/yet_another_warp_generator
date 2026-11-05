@@ -674,10 +674,15 @@ Android недоступны (DNS задаёт VpnService), а APK не пров
 аккаунт WARP регистрирует сервер, а сам конфиг (I1, junk, инварианты) собирается на странице.
 
 ```bash
-make web-serve              # http://127.0.0.1:8080 — статика + /api/warp + /api/dns
+make web-serve              # эталонный dev-бэкенд, http://127.0.0.1:8080
+make web-prod               # боевой Go-сервер: ./warpgen web (HTTPS/прокси, лимиты)
 ```
 
-На странице — одна кнопка «Сгенерировать»: аккаунт (`GET /api/warp`), проверка DNS-пресетов,
+Для публичного домена используйте `./warpgen web --listen 127.0.0.1:8080 --trust-proxy --hsts`
+за reverse proxy или `--tls-cert/--tls-key` напрямую; CORS по умолчанию только same-origin,
+`--allowed-origins` задаёт список. Подробности — `docs/WEB.md`.
+
+На странице — одна кнопка «Сгенерировать»: аккаунт (`POST /api/warp` с JSON `{}`), проверка DNS-пресетов,
 случайный endpoint и сборка конфига происходят автоматически; готовый `.conf` открывается
 в нижней панели (копировать / скачать). Настройки (endpoint, I1-профиль, junk,
 MTU/keepalive, DNS) — в выезжающей панели за шестерёнкой; ручного ввода ключей нет.
@@ -687,9 +692,9 @@ UDP, а из браузера доступен только TCP, поэтому 
 `make web-test` (офлайн, сеть подменена фейками: ядро, форма, статический аудит разметки и
 стилей, бэкенд).
 
-`web/dev-server.js` — эталон бэкенда для локальной проверки; боевой хостинг должен отдавать
-тот же контракт, а логику регистрации и проверки DNS брать из Go-пакетов `registration` и
-`dnscheck`, а не дублировать в JS.
+`web/dev-server.js` — эталон бэкенда для локальной проверки. Публичный сервер — `warpgen web`
+(пакет `webserver/`): тот же контракт, но регистрация и проверка DNS берутся из Go-пакетов
+`registration`, `config` и `dnscheck`, а не дублируются в JS.
 
 ## Структура пакетов
 
@@ -702,8 +707,9 @@ UDP, а из браузера доступен только TCP, поэтому 
 - `core/` — самодостаточный пайплайн `run`: автомат состояний (endpoint → туннель → форвардер → страны → мониторинг; либо SOCKS5 поверх туннеля в `--warp-only`), UDP-форвардер, локальный SOCKS5-сервер, события
 - `vpn/` — системный туннель `--tun`: TUN-устройство, мост TUN→SOCKS5 на gVisor netstack, DNS через цепочку, маршруты и их откат (Linux и Windows); Android получает fd от VpnService
 - `services/` — проверка доступности сервисов через SOCKS5 (Яндекс, VK, Госуслуги, Ozon, Wildberries; YouTube, Instagram, X, Discord, ChatGPT, Telegram, Gemini)
-- `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `dns-presets`, `dns-current`, `services`, `gen`, `chain`, `run`)
-- `web/` — веб-генератор `.conf`: `index.html` (разметка/стили) + `app.js` (связка UI) + `warpgen.js` (сборка в браузере, I1 на JS) и `dev-server.js` (эталон бэкенда: регистрация WARP и проверка DNS), см. `docs/WEB.md`
+- `cli/` — CLI-интерфейс (`register`, `scan`, `dns-check`, `dns-presets`, `dns-current`, `services`, `gen`, `chain`, `run`, `web`)
+- `webserver/` — боевой HTTP-сервер веб-генератора: статика, `POST /api/warp`, `/api/dns`, TLS/прокси, CORS, лимиты
+- `web/` — веб-генератор `.conf`: `index.html` (разметка/стили) + `app.js` (связка UI) + `warpgen.js` (сборка в браузере, I1 на JS), `embed.go` и `dev-server.js` (эталон бэкенда), см. `docs/WEB.md`
 
 ## WARP-safe инварианты конфига
 

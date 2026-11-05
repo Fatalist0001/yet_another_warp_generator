@@ -6,9 +6,11 @@
  * эндпоинта, которые в продакшене должен отдавать Go-бинарник этого репозитория
  * (`registration` + `dnscheck`). Зависимостей нет, Node >= 18.
  *
- *   GET /api/warp   — регистрирует WARP-аккаунт в Cloudflare, возвращает
- *                     {privKey, peer_pub, client_ipv4, client_ipv6, endpoint};
+ *   POST /api/warp  — регистрирует WARP-аккаунт в Cloudflare, возвращает
+ *                     {privKey, peer_pub, client_ipv4, client_ipv6};
  *                     приватный ключ генерируется на сервере (как в ref1).
+ *                     Тело — JSON `{}`, Content-Type: application/json:
+ *                     так браузерная CSRF-защита не пропускает чужие формы.
  *   GET /api/dns    — пресеты DNS из config/dns_presets.go: резолв hostname'ов
  *                     и проверка живости UDP-запросом к самому резолверу
  *                     (не через туннель), с замером RTT.
@@ -311,7 +313,13 @@ function createServer(opts) {
     }
 
     if (url.pathname === '/api/warp') {
-      if (req.method !== 'GET' && req.method !== 'POST') return sendJSON(res, 405, { error: 'только GET', code: 'METHOD_NOT_ALLOWED' });
+      if (req.method !== 'POST') return sendJSON(res, 405, { error: 'только POST (тело {} и Content-Type: application/json)', code: 'METHOD_NOT_ALLOWED' });
+      if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
+        return sendJSON(res, 415, { error: 'нужен Content-Type: application/json', code: 'UNSUPPORTED_MEDIA_TYPE' });
+      }
+      // Тело не нужно, но его надо дочитать, иначе keep-alive-соединение
+      // останется с непрочитанными байтами.
+      req.resume();
       if (!allowed(warpRate, ip, LIMIT)) return sendJSON(res, 429, { error: 'слишком много запросов, подождите минуту', code: 'RATE_LIMITED' });
       try {
         const acc = await registerAccount(options);

@@ -212,13 +212,22 @@ async function main() {
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = 'http://127.0.0.1:' + server.address().port;
 
-  const warp = await fetch(base + '/api/warp');
+  const warp = await fetch(base + '/api/warp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
   const warpJs = await warp.json();
-  check('/api/warp 200 + JSON', warp.status === 200 && warpJs.peer_pub === 'PEER_PUB=');
+  check('POST /api/warp 200 + JSON', warp.status === 200 && warpJs.peer_pub === 'PEER_PUB=');
   check('CORS и no-store', warp.headers.get('access-control-allow-origin') === '*' &&
     warp.headers.get('cache-control') === 'no-store');
   check('приватный ключ в ответе (клиент собирает .conf)',
     typeof warpJs.privKey === 'string' && Buffer.from(warpJs.privKey, 'base64').length === 32);
+
+  const getWarp = await fetch(base + '/api/warp');
+  check('GET /api/warp → 405 (регистрация только POST)', getWarp.status === 405, String(getWarp.status));
+  const noJson = await fetch(base + '/api/warp', { method: 'POST', body: '{}' });
+  check('POST без application/json → 415', noJson.status === 415, String(noJson.status));
 
   const dns = await fetch(base + '/api/dns');
   const dnsJs = await dns.json();
@@ -229,13 +238,21 @@ async function main() {
   check('лимит проверок DNS → 429 RATE_LIMITED',
     dnsLimited.status === 429 && (await dnsLimited.json()).code === 'RATE_LIMITED');
 
-  const post = await fetch(base + '/api/warp', { method: 'POST' });
-  check('POST /api/warp разрешён (ref2-стиль)', post.status === 200);
+  const post = await fetch(base + '/api/warp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: '{}'
+  });
+  check('POST с JSON Content-Type разрешён', post.status === 200, String(post.status));
   const put = await fetch(base + '/api/warp', { method: 'PUT' });
   check('PUT → 405', put.status === 405, String(put.status));
 
-  // лимит: 2 запроса на минуту из настроек; уже потратили 2 (GET+POST)
-  const limited = await fetch(base + '/api/warp');
+  // лимит: 2 запроса на минуту из настроек; уже потратили 2 (два POST)
+  const limited = await fetch(base + '/api/warp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
   const limitedJs = await limited.json();
   check('лимит запросов → 429 RATE_LIMITED',
     limited.status === 429 && limitedJs.code === 'RATE_LIMITED', JSON.stringify(limitedJs).slice(0, 80));
@@ -276,7 +293,11 @@ async function main() {
   });
   await new Promise(r => server2.listen(0, '127.0.0.1', r));
   const base2 = 'http://127.0.0.1:' + server2.address().port;
-  const rl = await fetch(base2 + '/api/warp');
+  const rl = await fetch(base2 + '/api/warp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
   const rlJs = await rl.json();
   check('429 от Cloudflare → 429 RATE_LIMITED', rl.status === 429 && rlJs.code === 'RATE_LIMITED',
     JSON.stringify(rlJs).slice(0, 100));
@@ -288,7 +309,11 @@ async function main() {
   });
   await new Promise(r => server3.listen(0, '127.0.0.1', r));
   const base3 = 'http://127.0.0.1:' + server3.address().port;
-  const up = await fetch(base3 + '/api/warp');
+  const up = await fetch(base3 + '/api/warp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
   const upJs = await up.json();
   check('нет сети → UPSTREAM_UNAVAILABLE', up.status === 503 && upJs.code === 'UPSTREAM_UNAVAILABLE',
     JSON.stringify(upJs).slice(0, 100));

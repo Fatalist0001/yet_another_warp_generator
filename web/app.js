@@ -285,7 +285,7 @@
         '<div class="v' + (mono ? ' mono' : '') + '">' + escapeHtml(v) + '</div>';
       els.accInfo.appendChild(row);
     };
-    kv('endpoint', acc.endpoint, true);
+    kv('endpoint', acc.endpoint || els.endpoint.value || 'случайный при генерации', true);
     kv('publicKey', acc.serverPublicKey, true);
     kv('IPv4', acc.addressV4, true);
     kv('IPv6', acc.addressV6, true);
@@ -298,9 +298,11 @@
       state.account = acc;
       els.accState.textContent = 'готов';
       els.accState.classList.remove('state');
-      els.endpoint.value = acc.endpoint;
+      // Сервер может не выбирать endpoint: тогда оставляем уже подставленный
+      // случайный кандидат, а не затираем поле пустой строкой.
+      if (acc.endpoint) els.endpoint.value = acc.endpoint;
       showAccount();
-      statusLine('аккаунт получен: ' + acc.addressV4 + ' · ' + acc.endpoint, 'ok');
+      statusLine('аккаунт получен: ' + acc.addressV4 + (acc.endpoint ? ' · ' + acc.endpoint : ''), 'ok');
       return acc;
     }).catch(function (e) {
       els.accState.textContent = 'ошибка';
