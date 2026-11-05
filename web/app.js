@@ -39,7 +39,6 @@
     paramDns: $('paramDns'),
     paramMtu: $('paramMtu'),
     paramI1: $('paramI1'),
-    paramsRow: $('paramsRow'),
 
     statusBox: $('statusBox'),
     confBlock: $('confBlock'),
@@ -81,12 +80,29 @@
   function openSheet() { els.sheet.classList.add('open'); }
   function closeSheet() { els.sheet.classList.remove('open'); }
 
-  // ---------- статус-плашка ----------
-  function status(html, tag) {
-    els.statusBox.className = 'status ' + (tag || 'info');
-    els.statusBox.innerHTML = html;
-    openSheet();
+  // ---------- лог статуса ----------
+  var _statusN = 0;
+  function statusLine(msg, tag) {
+    tag = tag || 'info';
+    var t = new Date().toLocaleTimeString('ru-RU', { hour12: false });
+    var line = document.createElement('div');
+    line.className = 'line fade-in ' + tag;
+    line.innerHTML =
+      '<span class="time">[' + t + ']</span>' +
+      '<span class="code">' +
+        (tag === 'ok' ? '[ok]' :
+         tag === 'warn' ? '[--]' :
+         tag === 'err' ? '[err]' : '[info]') +
+      '</span>' +
+      '<span class="msg">' + msg + '</span>';
+    els.statusBox.appendChild(line);
+    els.statusBox.scrollTop = els.statusBox.scrollHeight;
+    _statusN++;
+    return _statusN;
   }
+
+  function clearStatus() { els.statusBox.innerHTML = ''; _statusN = 0; }
+
 
   // Текст ошибки API: код + понятное пояснение (не просто «ошибка»).
   function apiErrorText(e) {
@@ -96,6 +112,24 @@
       return 'сервис недоступен: ' + msg.replace(/^Сервер недоступен: /, '');
     }
     return msg + (e.code ? ' [' + e.code + ']' : '');
+  }
+
+  // ---------- сегменты (portMode / i1Profile / junkPreset) ----------
+  function bindSegment(seg, key) {
+    var btns = seg.querySelectorAll('button');
+    if (btns.length === 0) btns = seg._children || [];
+    function set(val) {
+      for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.val === val);
+      localStorage.setItem(key, val);
+    }
+    var saved = localStorage.getItem(key);
+    set(saved || (btns[0] && btns[0].dataset.val) || 'warpgen');
+    seg.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('button') : null;
+      if (!b) return;
+      set(b.dataset.val);
+      updateReadout();
+    });
   }
 
   // ---------- DNS ----------
@@ -133,7 +167,7 @@
       el.className = 'dns-item' + (p.ok ? '' : ' dead');
       el.innerHTML = '<div class="name">' + escapeHtml(p.label) + '</div>' +
         '<div class="ip">' + escapeHtml(ipStr) + '</div>' +
-        '<div class="note">' + (p.ok ? 'жив' : 'мёртв') +
+        '<div class="rtt">' + (p.ok ? 'жив' : 'мёртв') +
         (p.rttMs != null ? ' · ' + p.rttMs + ' мс' : '') + '</div>';
       el.addEventListener('click', function () {
         if (!p.ok) return;
@@ -153,6 +187,7 @@
     els.dnsList.classList.add('hidden');
     els.accDnsBtn.disabled = true;
     els.accDnsBtn.textContent = 'проверяю…';
+    statusLine('проверка DNS-пресетов…', 'info');
     return W.API.dns().then(function (presets) {
       state.dns.ips = {};
       presets.forEach(function (p) {
@@ -172,18 +207,18 @@
       els.dnsList.classList.remove('hidden');
       els.dnsCustomRow.classList.add('hidden');
       els.dnsState.textContent = 'проверено: ' + alive + ' из ' + presets.length;
-      status('DNS проверены сервером: живых ' + alive + ' из ' + presets.length +
-        '. В конфиг подставляются ответившие IP.', alive ? 'ok' : 'warn');
+      statusLine('DNS проверены: живых ' + alive + ' из ' + presets.length +
+        ' — в конфиг подставляются ответившие IP', alive ? 'ok' : 'warn');
       return presets;
     }).catch(function (e) {
       els.dnsState.textContent = 'не удалось';
-      status('Проверка DNS не удалась: ' + apiErrorText(e) +
-        '<div class="note">Можно выбрать пресет вручную — адреса впишутся без проверки.</div>', 'warn');
+      statusLine('Проверка DNS не удалась: ' + apiErrorText(e) +
+        '. Пресет останется: адреса впишутся без проверки.', 'warn');
       return null;
     }).then(function (r) {
       els.dnsPreset.disabled = false;
       els.accDnsBtn.disabled = false;
-      els.accDnsBtn.textContent = '🩺 проверить';
+      els.accDnsBtn.textContent = 'проверить';
       return r;
     });
   }
@@ -208,74 +243,65 @@
     var acc = currentAccount();
     if (!acc) return;
     els.accState.textContent = 'готов';
-    els.accInfo.innerHTML =
-      '<div class="kv-row"><span class="k">PublicKey</span><span class="v">' + escapeHtml(acc.serverPublicKey || '—') + '</span></div>' +
-      '<div class="kv-row"><span class="k">IPv4</span><span class="v">' + escapeHtml(acc.addressV4 || '—') + '</span></div>' +
-      '<div class="kv-row"><span class="k">IPv6</span><span class="v">' + escapeHtml(acc.addressV6 || '—') + '</span></div>' +
-      '<div class="kv-row"><span class="k">Endpoint</span><span class="v">' + escapeHtml(acc.endpoint || '—') + '</span></div>' +
-      '<div class="note">Приватный ключ не показывается и никуда не сохраняется в браузере.</div>';
+    els.accState.classList.remove('state');
+    els.accInfo.innerHTML = '';
+    els.accInfo.classList.add('kv');
+    var kv = function (k, v, mono) {
+      var row = document.createElement('div');
+      row.className = 'kv-row';
+      row.innerHTML = '<div class="k">' + escapeHtml(k) + '</div>' +
+        '<div class="v' + (mono ? ' mono' : '') + '">' + escapeHtml(v) + '</div>';
+      els.accInfo.appendChild(row);
+    };
+    kv('endpoint', acc.endpoint, true);
+    kv('publicKey', acc.serverPublicKey, true);
+    kv('IPv4', acc.addressV4, true);
+    kv('IPv6', acc.addressV6, true);
+    openSheet();
   }
 
   function doAccount() {
-    if (state.account) { showAccount(); return Promise.resolve(state.account); }
-    els.accBtn.disabled = true;
-    els.accState.textContent = 'регистрация…';
-    status('<span class="loader"></span> создаю аккаунт WARP на сервере…', 'info');
+    statusLine('получаю аккаунт WARP на сервере…', 'info');
     return W.API.account().then(function (acc) {
       state.account = acc;
+      els.accState.textContent = 'готов';
+      els.accState.classList.remove('state');
+      els.endpoint.value = acc.endpoint;
       showAccount();
-      if (acc.endpoint && !els.endpoint.value.trim()) els.endpoint.value = acc.endpoint;
-      status('Аккаунт WARP получен. Можно генерировать конфиг.', 'ok');
+      statusLine('аккаунт получен: ' + acc.addressV4 + ' · ' + acc.endpoint, 'ok');
       return acc;
     }).catch(function (e) {
       els.accState.textContent = 'ошибка';
-      status('Не удалось получить аккаунт: ' + apiErrorText(e), 'err');
+      els.accState.classList.add('state');
+      statusLine('не удалось получить аккаунт: ' + apiErrorText(e), 'err');
       return null;
-    }).then(function (r) {
-      els.accBtn.disabled = false;
-      els.accBtn.textContent = '🔐 Аккаунт';
-      return r;
     });
   }
 
   // ---------- endpoint ----------
-  function portModeValue() {
-    return localStorage.getItem('warpgen_portmode') || els.portMode.value || 'wide';
+  function endpointValue() {
+    var v = els.endpoint.value.trim();
+    return v || W.randomEndpoint({ widePorts: localStorage.getItem('warpgen_portmode') === 'wide' });
   }
 
   function rollEndpoint() {
-    var ep = W.randomEndpoint({ widePorts: portModeValue() === 'wide' });
+    var ep = W.randomEndpoint({ widePorts: localStorage.getItem('warpgen_portmode') === 'wide' });
     els.endpoint.value = ep;
+    updateReadout();
     return ep;
   }
 
-  function endpointValue() {
-    return els.endpoint.value.trim() || rollEndpoint();
-  }
-
-  // ---------- настройки ----------
-  function loadSettings() {
-    var q = new URLSearchParams(location.search || '');
-    els.endpoint.value = q.get('endpoint') || '';
-    els.portMode.value = localStorage.getItem('warpgen_portmode') || 'wide';
-    els.i1Profile.value = localStorage.getItem('warpgen_i1profile') || 'quic';
-    els.junkPreset.value = localStorage.getItem('warpgen_junk') || 'warpgen';
-    els.i1Host.value = localStorage.getItem('warpgen_i1host') || '';
-    fillDnsSelect();
-    els.dnsPreset.value = localStorage.getItem('warpgen_dns') || W.DNSPresets[0].id;
-    els.dnsCustom.value = localStorage.getItem('warpgen_dns_custom') || '';
-    if (!els.endpoint.value) rollEndpoint();
-  }
-
-  function bindSlider(rangeEl, valEl, limits, storageKey) {
-    rangeEl.min = limits.min;
-    rangeEl.max = limits.max;
-    var v = localStorage.getItem(storageKey);
-    rangeEl.value = v !== null ? Number(v) : limits.def;
-    valEl.textContent = rangeEl.value;
-    rangeEl.addEventListener('input', function () {
-      valEl.textContent = rangeEl.value;
-      localStorage.setItem(storageKey, String(rangeEl.value));
+  // ---------- параметры интерфейса ----------
+  function bindSlider(slider, valEl, def) {
+    slider.min = W.LIMITS[slider.id].min;
+    slider.max = W.LIMITS[slider.id].max;
+    var saved = localStorage.getItem(slider.id);
+    slider.value = saved || def;
+    valEl.textContent = slider.value;
+    slider.addEventListener('input', function () {
+      valEl.textContent = slider.value;
+      localStorage.setItem(slider.id, slider.value);
+      updateReadout();
     });
   }
 
@@ -288,9 +314,39 @@
       var cls = 'val';
       if (/^\[.*\]$/.test(line)) cls = 'section';
       else if (/^[A-Za-z]/.test(line)) cls = 'key';
-      out.push('<span class="line ' + cls + '">' + escapeHtml(line) + '</span>');
+      out.push('<span class="line ' + cls + '" style="--i:' + i + '">' +
+        escapeHtml(line) + '</span>');
     }
     els.confOut.innerHTML = out.join('\n');
+  }
+
+  // «приборная» таблица на главном: текущее состояние без обращения к сети
+  function updateReadout() {
+    if (els.paramEp) els.paramEp.textContent = els.endpoint.value.trim() || '—';
+    if (els.paramDns) {
+      var sel = els.dnsPreset.value;
+      var txt = '—';
+      if (sel === 'custom') {
+        txt = els.dnsCustom.value.trim() || 'своё';
+      } else {
+        var ips = state.dns.ips[sel];
+        if (ips && ips.length) {
+          txt = ips.slice(0, 2).join(', ');
+        } else {
+          for (var i = 0; i < W.DNSPresets.length; i++) {
+            if (W.DNSPresets[i].id === sel) { txt = W.DNSPresets[i].label; break; }
+          }
+        }
+      }
+      els.paramDns.textContent = txt;
+    }
+    if (els.paramMtu) {
+      els.paramMtu.textContent = 'MTU ' + (els.mtu.value || '1280') +
+        ' · KA ' + (els.keepalive.value || '25');
+    }
+    if (els.paramI1) {
+      els.paramI1.textContent = (localStorage.getItem('warpgen_i1profile') || 'quic').toUpperCase();
+    }
   }
 
   // ---------- генерация ----------
@@ -299,15 +355,16 @@
     state.loading = true;
     els.genBtn.disabled = true;
     els.genBtn.textContent = 'генерирую…';
-    status('<span class="loader"></span> собираю конфиг…', 'info');
+    clearStatus();
 
     var accP = state.account ? Promise.resolve(state.account) : doAccount();
     return accP.then(function (acc) {
       if (!acc) {
-        status('Аккаунт недоступен — конфиг не собран. Проверьте соединение с сервером.', 'err');
+        statusLine('аккаунт недоступен — конфиг не собран', 'err');
         return null;
       }
       state.account = acc;
+      statusLine('собираю .conf (WARP-safe инварианты, I1, junk)…', 'info');
       var input = {
         account: acc,
         endpoint: endpointValue(),
@@ -320,7 +377,8 @@
       };
       return W.CONFIG.generate(input).then(function (res) {
         if (!res.ok) {
-          status('Конфиг не собран:<br>• ' + res.errors.map(escapeHtml).join('<br>• '), 'err');
+          statusLine('конфиг не собран:', 'err');
+          res.errors.forEach(function (er) { statusLine('  • ' + er, 'err'); });
           return null;
         }
         state.lastConf = res.conf;
@@ -332,46 +390,32 @@
         els.confBlock.classList.remove('hidden');
         var warnHtml = '';
         if (res.warnings && res.warnings.length) {
-          warnHtml = '<div class="note">⚠ ' + res.warnings.map(escapeHtml).join('<br>⚠ ') + '</div>';
+          warnHtml = '<div class="note">Внимание: ' + res.warnings.map(escapeHtml).join('; ') + '</div>';
         }
-        status('Конфиг готов — скопируйте или скачайте.' + warnHtml,
+        statusLine('конфиг готов — скопируйте или скачайте' + warnHtml,
           res.warnings && res.warnings.length ? 'warn' : 'ok');
         return res;
       });
     }).catch(function (e) {
-      status('Ошибка генерации: ' + apiErrorText(e), 'err');
+      statusLine('ошибка генерации: ' + apiErrorText(e), 'err');
       return null;
     }).then(function (r) {
       state.loading = false;
       els.genBtn.disabled = false;
-      els.genBtn.textContent = 'Сгенерировать';
+      els.genBtn.textContent = 'сгенерировать';
       return r;
     });
   }
 
-  // ---------- экспорт для тестов ----------
-  window.__warpgen = {
-    state: state,
-    els: els,
-    doAccount: doAccount,
-    dnsPresets: dnsPresets,
-    doGenerate: doGenerate,
-    renderConf: renderConf
-  };
-
   // ---------- копирование и скачивание ----------
   function copyConf() {
     if (!state.lastConf) return;
-    var done = function () { status('Конфиг скопирован в буфер обмена.', 'ok'); };
+    var done = function () { statusLine('конфиг скопирован в буфер обмена', 'ok'); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(state.lastConf).then(done, function () {
-        fallbackCopy();
-        done();
+        fallbackCopy(); done();
       });
-    } else {
-      fallbackCopy();
-      done();
-    }
+    } else { fallbackCopy(); done(); }
   }
 
   function fallbackCopy() {
@@ -385,7 +429,6 @@
 
   function downloadConf() {
     if (!state.lastConf) return;
-    // octet-stream, не text/plain: иначе браузер дописывает .txt к имени.
     var blob = new Blob([state.lastConf], { type: 'application/octet-stream' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
@@ -395,56 +438,58 @@
     a.click();
     if (a.remove) a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-    status('Файл warpgen.conf скачан.', 'ok');
+    statusLine('warpgen.conf скачан', 'ok');
   }
 
-  // ---------- обработчики ----------
-  els.settingsTrigger.addEventListener('click', function () {
-    if (els.settingsPanel.classList.contains('open')) closeSettings(); else openSettings();
-  });
-  els.settingsBackdrop.addEventListener('click', closeSettings);
-  els.settingsClose.addEventListener('click', closeSettings);
-  els.sheetClose.addEventListener('click', closeSheet);
-  els.genBtn.addEventListener('click', doGenerate);
-  els.accBtn.addEventListener('click', doAccount);
-  els.accDnsBtn.addEventListener('click', dnsPresets);
-  els.confCopyBtn.addEventListener('click', copyConf);
-  els.confCopy.addEventListener('click', copyConf);
-  els.confDownload.addEventListener('click', downloadConf);
-  els.epBtn.addEventListener('click', function () {
-    status('Случайный endpoint из диапазонов WARP: ' + rollEndpoint(), 'ok');
-  });
-
-  els.dnsPreset.addEventListener('change', function () {
-    localStorage.setItem('warpgen_dns', els.dnsPreset.value);
-    els.dnsList.classList.add('hidden');
+  // ---------- инициализация ----------
+  var _ = function () {
+    var port = W.EndpointPresets.defaultPort;
+    els.endpoint.value = W.randomEndpoint({ port: port });
+    bindSegment(els.portMode, 'warpgen_portmode');
+    bindSegment(els.i1Profile, 'warpgen_i1profile');
+    bindSegment(els.junkPreset, 'warpgen_junk');
+    bindSlider(els.mtu, els.mtuVal, W.LIMITS.mtu.def);
+    bindSlider(els.keepalive, els.kaVal, W.LIMITS.keepalive.def);
+    els.i1Profile.addEventListener('click', function (e) {
+      var b = e.target.closest('button');
+      if (!b) return;
+      els.i1HostRow.classList.toggle('hidden', b.dataset.val !== 'quic');
+    });
+    els.i1HostRow.classList.toggle('hidden', localStorage.getItem('warpgen_i1profile') !== 'quic');
+    fillDnsSelect();
+    updateReadout();
     updateDnsUI();
-  });
-  els.dnsCustom.addEventListener('input', function () {
-    localStorage.setItem('warpgen_dns_custom', els.dnsCustom.value.trim());
-  });
-  els.i1Profile.addEventListener('change', function () {
-    localStorage.setItem('warpgen_i1profile', els.i1Profile.value);
-    els.i1HostRow.classList.toggle('hidden', els.i1Profile.value !== 'quic');
-  });
-  els.i1Host.addEventListener('input', function () {
-    localStorage.setItem('warpgen_i1host', els.i1Host.value.trim());
-  });
-  els.junkPreset.addEventListener('change', function () {
-    localStorage.setItem('warpgen_junk', els.junkPreset.value);
-  });
-  els.portMode.addEventListener('change', function () {
-    localStorage.setItem('warpgen_portmode', els.portMode.value);
-  });
+    els.dnsPreset.addEventListener('change', function () { updateDnsUI(); updateReadout(); });
 
-  window.addEventListener('keydown', function (e) {
-    if (e && e.key === 'Escape') { closeSettings(); closeSheet(); }
-  });
+    els.endpoint.addEventListener('input', updateReadout);
+    els.dnsCustom.addEventListener('input', updateReadout);
+    els.settingsTrigger.addEventListener('click', openSettings);
+    els.settingsClose.addEventListener('click', closeSettings);
+    els.settingsBackdrop.addEventListener('click', closeSettings);
+    els.sheetClose.addEventListener('click', closeSheet);
+    els.genBtn.addEventListener('click', function () { return doGenerate(); });
+    els.accBtn.addEventListener('click', function () { return doAccount(); });
+    els.accDnsBtn.addEventListener('click', function () { return dnsPresets(); });
+    els.epBtn.addEventListener('click', rollEndpoint);
+    els.confCopyBtn.addEventListener('click', copyConf);
+    els.confCopy.addEventListener('click', copyConf);
+    els.confDownload.addEventListener('click', downloadConf);
 
-  // ---------- старт ----------
-  loadSettings();
-  bindSlider(els.mtu, els.mtuVal, W.LIMITS.mtu, 'warpgen_mtu');
-  bindSlider(els.keepalive, els.kaVal, W.LIMITS.keepalive, 'warpgen_keepalive');
-  els.i1HostRow.classList.toggle('hidden', els.i1Profile.value !== 'quic');
-  updateDnsUI();
+    document.body.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { closeSettings(); closeSheet(); }
+    });
+
+    window.__warpgen = {
+      state: state, els: els,
+      doAccount: doAccount, dnsPresets: dnsPresets,
+      doGenerate: doGenerate, renderConf: renderConf,
+      currentAccount: currentAccount, rollEndpoint: rollEndpoint
+    };
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _);
+  } else {
+    _();
+  }
 })();

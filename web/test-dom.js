@@ -16,7 +16,7 @@ function makeEl(id) {
   const classes = new Set();
   const el = {
     id: id, value: '', innerHTML: '', textContent: '', placeholder: '', disabled: false,
-    min: '', max: '', checked: false, style: {},
+    min: '', max: '', checked: false, style: {}, dataset: {},
     _children: [],
     _handlers: {},
     addEventListener(ev, fn) { (this._handlers[ev] = this._handlers[ev] || []).push(fn); },

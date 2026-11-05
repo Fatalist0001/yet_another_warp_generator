@@ -65,9 +65,25 @@ check('у кнопок есть type', (bodyHtml.match(/<button(?![^>]*\btype=)/
 check('иконки-кнопки подписаны aria-label',
   (bodyHtml.match(/<button[^>]*aria-label|<button[^>]*id="(genBtn|confCopy|confDownload|accBtn|accDnsBtn|epBtn)"/g) || []).length > 0);
 check('учитывается prefers-reduced-motion', /prefers-reduced-motion/.test(css));
-check('фоновые аура-элементы не перехватывают клики',
-  /\.orb\s*\{[^}]*pointer-events:\s*none/.test(css) && /\.hero-halo\s*\{[^}]*pointer-events:\s*none/.test(css));
+check('фоновый слой не перехватывает клики',
+  /\.bg\s*\{[^}]*pointer-events:\s*none/.test(css) &&
+  /\.settings-backdrop\s*\{[^}]*pointer-events:\s*none/.test(css));
 check('анимации используют определённый easing', !/var\(--ease-(?!in|in-out|out)[a-z-]*\)/.test(css));
+
+console.log('\n[7] Эстетика: приборный стиль');
+check('нет градиентов', !/(linear|radial|conic)-gradient/.test(css));
+check('нет box-shadow и glow', !/box-shadow/.test(css));
+check('нет blur/glassmorphism', !/backdrop-filter|blur\(/.test(css));
+const radii = [...css.matchAll(/border-radius:\s*([^;}]+)/g)].map(m => m[1].trim());
+check('скругления только нулевые', radii.every(r => /^(0|0px)$/.test(r)), radii.join(', ') || 'нет');
+check('два шрифта объявлены и использованы',
+  /--font-mono:\s*'JetBrains Mono'/.test(css) && /--font-sans:\s*'Space Grotesk'/.test(css) &&
+  /var\(--font-mono\)/.test(css) && /var\(--font-sans\)/.test(css));
+check('кнопка при нажатии сдвигается', /\.action-btn:active\s*\{[^}]*translateY\(1px\)/.test(css));
+check('нет эмодзи в разметке', !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(bodyHtml));
+check('статусы в формате лога [ok]/[--]', /'\[ok\]'/.test(app) && /'\[--\]'/.test(app));
+check('нумерованные заголовки групп', (bodyHtml.match(/class="group-head">0[1-6] /g) || []).length >= 5);
+check('лог статусов размечен как .status-log', /class="status-log" id="statusBox"/.test(bodyHtml));
 
 console.log('');
 if (failures) {
