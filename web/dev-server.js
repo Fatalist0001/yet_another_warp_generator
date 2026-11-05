@@ -313,13 +313,13 @@ function createServer(opts) {
     }
 
     if (url.pathname === '/api/warp') {
+      // Тело не нужно, но его надо дочитать, иначе keep-alive-соединение
+      // останется с непрочитанными байтами (даже при 405/415).
+      req.resume();
       if (req.method !== 'POST') return sendJSON(res, 405, { error: 'только POST (тело {} и Content-Type: application/json)', code: 'METHOD_NOT_ALLOWED' });
       if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
         return sendJSON(res, 415, { error: 'нужен Content-Type: application/json', code: 'UNSUPPORTED_MEDIA_TYPE' });
       }
-      // Тело не нужно, но его надо дочитать, иначе keep-alive-соединение
-      // останется с непрочитанными байтами.
-      req.resume();
       if (!allowed(warpRate, ip, LIMIT)) return sendJSON(res, 429, { error: 'слишком много запросов, подождите минуту', code: 'RATE_LIMITED' });
       try {
         const acc = await registerAccount(options);
