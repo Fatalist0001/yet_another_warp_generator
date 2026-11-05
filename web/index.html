@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>warpgen — конфиг AmneziaWG для WARP</title>
+
+
+<style>
+/* Локальные шрифты (SIL OFL 1.1, см. fonts/OFL-*.txt): без запросов к
+   Google Fonts, чтобы страница не зависела от сети и не светила IP. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('fonts/jbm-cyrillic.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('fonts/jbm-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('fonts/sg-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('fonts/sg-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ===== технический инструмент / терминал ===== */
+/* 3 цвета + акцент: плоский чёрный, тёплый нейтрал, сигнальный оранжевый */
+:root {
+  /* глубина — один тон */
+  --bg:       #0B0B0B;
+  /* акцент: сигнальный оранжевый — только кнопка и статусы */
+  --accent:   #FF6A00;
+  --ok:       #FF6A00;
+  --warn:     #BFBFBF;
+  --err:      #FF3B30;
+  /* нейтралы — ч/б градации */
+  --panel:    #111111;
+  --border:   #3A3A3A;
+  --text:     #E9E6DE;
+  --text-dim: #8B8A84;
+  /* шрифты */
+  --font-sans: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', Consolas, monospace;
+  /* отступы, размер шрифта */
+  --pad:     14px;
+  --mono-fz: 12px;
+  /* индекс строки конфига: подставляет app.js для каскадного появления */
+  --i:       0;
+}
+
+/* ===== сброс ===== */
+*, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; margin: 0; overflow-x: hidden; }
+html { color-scheme: dark; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 14px var(--font-sans);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+}
+input, select, button { font: inherit; color: inherit; }
+.hidden { display: none !important; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); }
+
+/* ===== фон: плоский + едва заметная решётка (svg) ===== */
+.bg {
+  position: fixed; inset: 0; z-index: -3; pointer-events: none;
+  background: var(--bg);
+}
+.bg::after {
+  content: ''; position: absolute; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 40L40 0H20L0 20M40 40V20L20 40' stroke='%231F1F1F' stroke-width='0.5' fill='none'/%3E%3C/svg%3E");
+  opacity: 0.035;
+}
+
+/* ===== сетка страницы ===== */
+.main {
+  position: relative;
+  display: flex; flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 100vh;
+  min-height: 100svh;
+  padding: var(--pad);
+  padding-top: calc(76px + env(safe-area-inset-top));
+  padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom));
+  gap: 0;
+}
+.main::before {
+  /* вертикальная разделительная линия слева — опора композиции */
+  content: ''; position: absolute; left: calc(var(--pad) / 2); top: 0; bottom: 0;
+  width: 1px; background: var(--border);
+}
+
+/* ===== шапка (приборная панель) ===== */
+.brand {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 56px;
+}
+.brand-logo {
+  font: 600 13px var(--font-mono); color: var(--text);
+  background: var(--panel); border: 1px solid var(--border);
+  padding: 3px 7px; letter-spacing: -0.03em;
+}
+.brand h1 {
+  font: 600 17px var(--font-sans); letter-spacing: -0.02em; margin: 0;
+}
+.brand span { font: 400 11px var(--font-mono); color: var(--text-dim); }
+.settings-trigger {
+  position: fixed;
+  top: calc(var(--pad) + env(safe-area-inset-top));
+  right: var(--pad);
+  z-index: 60;
+  width: 44px; height: 44px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text);
+  display: grid; place-items: center;
+  cursor: pointer; flex: none;
+}
+.settings-trigger svg { width: 20px; height: 20px; stroke: var(--text-dim); stroke-width: 2; }
+.settings-trigger.open svg { stroke: var(--accent); }
+
+/* ===== настройки: выдвижная панель слева ===== */
+.settings-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+  opacity: 0; pointer-events: none; transition: opacity 0.2s linear; z-index: 40;
+}
+.settings-backdrop.open { opacity: 1; pointer-events: auto; }
+.settings-panel {
+  position: fixed; left: 0; top: 0; bottom: 0;
+  width: min(340px, 100vw);
+  background: var(--bg); border-right: 1px solid var(--border);
+  z-index: 41; transform: translateX(-100%); transition: transform 0.25s linear;
+  overflow-y: auto; overflow-x: hidden;
+  padding: var(--pad); padding-bottom: calc(var(--pad) + 80px);
+}
+.settings-panel.open { transform: translateX(0); }
+.settings-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 26px;
+}
+.settings-header h2 {
+  font: 600 14px var(--font-sans); letter-spacing: -0.02em; margin: 0;
+}
+.settings-close {
+  width: 44px; height: 44px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text-dim);
+  display: grid; place-items: center; cursor: pointer; flex: none;
+}
+.settings-close svg { width: 16px; height: 16px; stroke-width: 2; }
+.settings-close:hover { border-color: var(--accent); color: var(--accent); }
+
+.settings-group {
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+  margin-top: 18px;
+}
+.settings-group:first-child {
+  border-top: none; padding-top: 0; margin-top: 0;
+}
+.group-head {
+  font: 600 10.5px var(--font-mono); letter-spacing: 0.11em;
+  color: var(--text-dim); text-transform: uppercase;
+  padding-left: 4px; margin-bottom: 11px;
+}
+/* номер уже в тексте заголовка — «01 ENDPOINT» */
+
+/* ===== поля ===== */
+.field { margin-bottom: 15px; }
+.field:last-child { margin-bottom: 0; }
+.field-label {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px;
+  font: 500 11px var(--font-sans);
+  margin-bottom: 6px;
+}
+.field-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.field-head label { font: 500 11px var(--font-sans); }
+
+/* ===== однострочные строки «ключ … значение» ===== */
+.row-line {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+  font: var(--mono-fz) var(--font-mono);
+}
+.row-line:last-child { border-bottom: none; }
+.row-line .k { font: var(--mono-fz) var(--font-mono); color: var(--text-dim); letter-spacing: 0.06em; }
+.row-line .v { font: var(--mono-fz) var(--font-mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-line .tag { font: var(--mono-fz) var(--font-mono); color: var(--accent); letter-spacing: 0.06em; }
+.row-line .v a { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--text-dim); }
+.row-line .v a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ===== приборная таблица на главном ===== */
+.readout {
+  width: 100%;
+  margin-top: 34px;
+  border-top: 1px solid var(--border);
+}
+.readout-head {
+  display: flex; justify-content: space-between;
+  font: 9.5px var(--font-mono); text-transform: uppercase;
+  letter-spacing: 0.14em; color: var(--text-dim);
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+}
+.readout .row-line { padding: 11px 0; }
+.readout .row-line .k {
+  font: 9.5px var(--font-mono); text-transform: uppercase;
+  letter-spacing: 0.14em; color: var(--text-dim);
+}
+.readout .row-line .v { font: 12.5px var(--font-mono); }
+.readout .row-line .v small { font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); }
+
+/* ===== порядок работы ===== */
+.steps {
+  width: 100%;
+  margin-top: 34px;
+}
+.steps-head {
+  font: 9.5px var(--font-mono); text-transform: uppercase;
+  letter-spacing: 0.14em; color: var(--text-dim);
+  padding-bottom: 7px; border-bottom: 1px solid var(--border);
+}
+.steps-list {
+  list-style: none; margin: 0; padding: 0;
+}
+.steps-list li {
+  display: flex; gap: 14px; align-items: baseline;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.steps-list li:last-child { border-bottom: none; }
+.steps-list .n {
+  font: 10px var(--font-mono); color: var(--text-dim); flex: none;
+  letter-spacing: 0.1em;
+}
+.steps-list .t { font: 11.5px var(--font-sans); color: var(--text); }
+
+/* ===== инпуты ===== */
+input[type="text"], select {
+  width: 100%; background: var(--panel); border: 1px solid var(--border);
+  color: var(--text); font: var(--mono-fz) var(--font-mono);
+  padding: 8px 9px;
+}
+input[type="text"]::placeholder { color: #5A5A5A; font-size: 11px; }
+select { appearance: none; cursor: pointer; }
+select:focus, input:focus { outline: none; border-color: var(--accent); }
+
+/* ===== сегментированный переключатель ===== */
+.segment {
+  display: flex; flex-wrap: wrap; background: var(--panel);
+}
+.segment button {
+  flex: 1 1 auto; min-width: 84px; min-height: 44px;
+  border: 1px solid var(--border); margin: 0 -1px -1px 0;
+  background: transparent; color: var(--text-dim);
+  font: 10.5px var(--font-mono); text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 8px 6px; cursor: pointer;
+}
+.segment button:last-child { margin-right: 0; }
+.segment button.active {
+  color: var(--accent); border-color: var(--accent);
+  background: #1A1207;
+}
+
+/* ===== чекбоксы ===== */
+.switch {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-height: 44px; padding: 9px 0; border-bottom: 1px solid var(--border);
+}
+.switch:last-child { border-bottom: none; }
+.switch .label { font: var(--mono-fz) var(--font-mono); }
+.switch .toggler {
+  width: 34px; height: 18px; background: var(--panel); border: 1px solid var(--border);
+  position: relative; cursor: pointer;
+}
+.switch .toggler::after {
+  content: ''; position: absolute; top: 50%; left: 2px;
+  width: 12px; height: 12px; background: var(--border);
+  transform: translateY(-50%); transition: background 0.15s linear;
+}
+.switch input { display: none; }
+.switch input:checked + .toggler { border-color: var(--accent); }
+.switch input:checked + .toggler::after { left: calc(100% - 14px); background: var(--accent); }
+
+/* ===== слайдеры ===== */
+.slider-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.slider-row:last-child { border-bottom: none; }
+.slider-row .label { font: 10px var(--font-mono); color: var(--text-dim); width: 78px; }
+.slider-row input[type="range"] {
+  flex: 1; accent-color: var(--accent); background: var(--panel); border: 1px solid var(--border);
+  height: 3px;
+}
+.slider-row .val { font: var(--mono-fz) var(--font-mono); color: var(--text); width: 40px; text-align: right; }
+
+.hint {
+  font: 10px var(--font-mono); color: var(--text-dim);
+  line-height: 1.4; padding-left: 4px;
+}
+
+/* ===== главный экран ===== */
+.hero {
+  width: 100%;
+  text-align: left;
+}
+.hero-title {
+  font: 500 11.5px var(--font-mono); color: var(--text-dim);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  margin: 0 0 14px;
+}
+.hero-title span { color: var(--text); }
+.hero-desc { font: 12px var(--font-sans); color: var(--text-dim); margin: 0 0 20px; }
+
+/* ===== кнопка ===== */
+.action { width: 100%; }
+.action-btn {
+  width: 100%; height: 44px; border: none;
+  background: var(--accent); color: #0B0B0B;
+  font: 600 12.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.05s linear, background 0.1s linear;
+}
+.action-btn:hover { background: #FF7E1F; }
+.action-btn:active { transform: translateY(1px); }
+.action-btn:disabled { background: #3A3A3A; color: #7A7A7A; cursor: wait; }
+
+/* ===== лог статусов ===== */
+.status-log {
+  width: 100%;
+  font: var(--mono-fz) var(--font-mono);
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 30vh; overflow-y: auto;
+}
+.status-log .line {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 6px 0; border-bottom: 1px solid rgba(58,58,58,0.4);
+  font-size: 11px;
+}
+.status-log .line:last-child { border-bottom: none; }
+.status-log .time { color: var(--text-dim); opacity: 0.6; font-size: 9px; flex: none; }
+.status-log .ok .code { color: var(--ok); }
+.status-log .warn .code { color: var(--warn); }
+.status-log .err .code { color: var(--err); }
+.status-log .info .code { color: var(--accent); }
+.status-log .msg { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.status-log .line.fade-in { animation: logLine 0.15s linear forwards; }
+/* появление строк конфига: сдержанная задержка по индексу */
+.conf-box .line { display: block; animation: confLine 0.18s linear both; animation-delay: calc(var(--i, 0) * 14ms); }
+.conf-box .line.section { color: var(--accent); }
+.conf-box .line.key { color: var(--text); }
+.conf-box .line.val { color: var(--text-dim); }
+@keyframes confLine { from { opacity: 0; } to { opacity: 1; } }
+@keyframes logLine { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: translateX(0); } }
+
+/* ===== код-блок ===== */
+#confBlock { width: 100%; position: relative; }
+.conf-box {
+  width: 100%; background: var(--panel); border: 1px solid var(--border);
+  font: var(--mono-fz) var(--font-mono); color: var(--text);
+  white-space: pre; overflow-x: auto;
+  line-height: 1.5; padding: 12px;
+}
+.conf-head {
+  display: flex; align-items: center; justify-content: space-between;
+  border: 1px solid var(--border); border-bottom: none;
+  background: var(--panel);
+}
+.conf-name {
+  font: 10px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-dim); padding: 0 12px;
+}
+.conf-copy {
+  width: 44px; height: 44px; border: none; border-left: 1px solid var(--border);
+  background: transparent; color: var(--text-dim);
+  display: grid; place-items: center; cursor: pointer;
+}
+.conf-copy svg { width: 15px; height: 15px; stroke-width: 2; }
+.conf-copy:hover { border-color: var(--accent); color: var(--accent); }
+.conf-actions { display: flex; gap: 8px; margin-top: 10px; }
+.conf-actions button {
+  flex: 1; height: 44px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text);
+  font: var(--mono-fz) var(--font-mono); letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.conf-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.conf-actions button.primary {
+  background: var(--accent); color: #0B0B0B; border-color: var(--accent);
+}
+.conf-actions button.primary:hover { background: #FF7E1F; border-color: #FF7E1F; color: #0B0B0B; }
+
+/* ===== sheet ===== */
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  background: var(--bg); border-top: 1px solid var(--border);
+  transform: translateY(100%); transition: transform 0.28s linear;
+  z-index: 45; padding: var(--pad); padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 14px; max-height: 88vh;
+}
+.sheet-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.sheet-title {
+  font: 600 13px var(--font-sans); letter-spacing: -0.02em; margin: 0;
+}
+.sheet-handle {
+  position: absolute; left: 50%; top: 8px; transform: translateX(-50%);
+  width: 34px; height: 2px; border-radius: 0; background: var(--border);
+}
+.sheet-body { min-height: 0; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+.sheet.open { transform: translateY(0); }
+.sheet-close {
+  width: 44px; height: 44px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text-dim);
+  display: grid; place-items: center; cursor: pointer;
+}
+.sheet-close svg { width: 15px; height: 15px; stroke-width: 2; }
+
+/* ===== нижняя подсказка ===== */
+.footer {
+  width: 100%; padding: 8px 0 4px;
+  border-top: 1px solid var(--border);
+  margin-top: auto;
+  padding-top: 10px;
+}
+.footer p {
+  margin: 0; font: 9px var(--font-mono); color: var(--text-dim);
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+
+/* ===== DNS / аккаунт ===== */
+.state { font: 10px var(--font-mono); color: var(--text-dim); }
+.dns-list { display: flex; flex-direction: column; gap: 5px; max-height: 130px; overflow-y: auto; }
+.dns-item {
+  display: flex; align-items: center; gap: 8px;
+  font: 11px var(--font-mono); border-bottom: 1px solid var(--border);
+  padding: 5px 0;
+}
+.dns-item.dead { color: var(--text-dim); }
+.dns-item .name { font-weight: 600; min-width: 64px; color: var(--text); }
+.dns-item .ip { flex: 1; color: var(--text-dim); min-width: 0; }
+.dns-item .rtt { color: var(--text-dim); font-size: 9px; }
+.kv { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.kv-row { display: flex; gap: 10px; font: 11px var(--font-sans); }
+.kv-row .k { font-weight: 600; color: var(--text-dim); min-width: 90px; }
+.kv-row .v { color: var(--text); font-family: var(--font-mono); }
+.flex { display: flex; gap: 10px; align-items: center; }
+.btn {
+  min-height: 44px; padding: 7px 11px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text);
+  font: 10.5px var(--font-mono); text-transform: uppercase;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn.ghost { border-style: dashed; }
+.btn.ghost:hover { border-color: var(--accent); color: var(--accent); }
+.link-btn {
+  min-height: 44px; padding: 0 2px;
+  background: none; border: none; font: 10.5px var(--font-mono);
+  color: var(--text-dim); cursor: pointer; text-transform: uppercase;
+}
+.link-btn:hover { color: var(--accent); }
+.note { font: 10px var(--font-mono); color: var(--text-dim); line-height: 1.45; }
+
+/* ===== анимации ===== */
+.fade-in { animation: fadeIn 0.4s linear forwards; opacity: 0; transform: translateY(6px); }
+@keyframes fadeIn { to { opacity: 1; transform: translateY(0); } }
+
+/* ===== медиа ===== */
+@media (max-width: 480px) {
+  .main { padding-top: calc(68px + env(safe-area-inset-top)); }
+  .brand { margin-bottom: 40px; }
+  .hero-desc { font-size: 11px; }
+  .action-btn { font-size: 12px; }
+  .sheet { padding: 18px 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+</style>
+</head>
+<body><div class="bg"></div>
+
+  <!-- настройки: скрытая панель слева -->
+  <button class="settings-trigger" id="settingsTrigger" type="button" aria-label="Настройки">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82V9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1-2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 .33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/></svg>
+  </button>
+  <div class="settings-backdrop" id="settingsBackdrop"></div>
+  <aside class="settings-panel" id="settingsPanel">
+    <div class="settings-header">
+      <h2>НАСТРОЙКИ</h2>
+      <button class="settings-close" id="settingsClose" type="button" aria-label="Закрыть">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="settings-group" data-num="01">
+      <div class="group-head">01 ENDPOINT</div>
+      <div class="field">
+        <label class="field-label"><span>Endpoint Cloudflare</span></label>
+        <input type="text" id="endpoint" placeholder="случайный из диапазонов WARP">
+        <div class="flex"><button class="btn ghost" id="epBtn" type="button">случайный endpoint</button></div>
+      </div>
+      <div class="field">
+        <span class="field-label">порты</span>
+        <div class="segment" id="portMode">
+          <button type="button" data-val="warp">только WARP</button>
+          <button type="button" data-val="wide" class="active">широкий набор</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-group" data-num="02">
+      <div class="group-head">02 АККАУНТ / DNS</div>
+      <div class="switch">
+        <span class="label"><span id="accState" class="state">-- аккаунт не получен</span></span>
+        <button class="btn" id="accBtn" type="button">получить</button>
+      </div>
+      <div id="accInfo" class="kv"></div>
+
+      <div class="field">
+        <div class="field-head">
+          <label>DNS</label>
+          <button class="link-btn" id="accDnsBtn" type="button">проверить</button>
+        </div>
+        <select id="dnsPreset"></select>
+        <div id="dnsCustomRow" class="hidden"><input type="text" id="dnsCustom" placeholder="1.1.1.1, 8.8.8.8"></div>
+        <div id="dnsState" class="state">пресеты по умолчанию</div>
+        <div id="dnsList" class="dns-list hidden"></div>
+      </div>
+    </div>
+
+    <div class="settings-group" data-num="03">
+      <div class="group-head">03 I1</div>
+      <div class="field">
+        <span class="field-label">профиль</span>
+        <div class="segment" id="i1Profile">
+          <button type="button" data-val="quic" class="active">QUIC</button>
+          <button type="button" data-val="dns">DNS</button>
+          <button type="button" data-val="sip">SIP</button>
+          <button type="button" data-val="stun">STUN</button>
+        </div>
+        <div class="hint">Мимикрия под реальный трафик; QUIC узнаётся лучше всего.</div>
+      </div>
+      <div class="field hidden" id="i1HostRow">
+        <label class="field-label">SNI-хост</label>
+        <input type="text" id="i1Host" placeholder="www.google.com">
+      </div>
+    </div>
+
+    <div class="settings-group" data-num="04">
+      <div class="group-head">04 JUNK</div>
+      <div class="field">
+        <span class="field-label">пресет</span>
+        <div class="segment" id="junkPreset">
+          <button type="button" data-val="warpgen" class="active">warpgen 4/40/70</button>
+          <button type="button" data-val="compatible">compatible</button>
+          <button type="button" data-val="balanced">balanced</button>
+          <button type="button" data-val="enhanced">enhanced</button>
+          <button type="button" data-val="random">случайно</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-group" data-num="05">
+      <div class="group-head">05 ПАРАМЕТРЫ</div>
+      <div class="slider-row">
+        <span class="label">MTU</span>
+        <input type="range" id="mtu" min="1280" max="1420" value="1280">
+        <span class="val" id="mtuVal">1280</span>
+      </div>
+      <div class="slider-row">
+        <span class="label">keepalive</span>
+        <input type="range" id="keepalive" min="10" max="120" value="25">
+        <span class="val" id="kaVal">25</span>
+      </div>
+    </div>
+
+    <div class="settings-group" data-num="06">
+      <div class="group-head">06 ИНФО</div>
+      <div class="note">
+        WARP-safe конфиги AmneziaWG. Аккаунт создаёт сервер, конфиг
+        собирается в браузере и никуда не отправляется.<br>
+        <span id="buildNote">warpgen web — сборка конфига в браузере</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- главный экран -->
+  <main class="main">
+    <div class="brand">
+      <div class="brand-logo">WG</div>
+      <div>
+        <h1>warpgen</h1>
+        <span>конфиг AmneziaWG для WARP</span>
+      </div>
+    </div>
+
+    <div class="hero">
+      <h2 class="hero-title"><span>АМНЕЗИЯWG</span> ДЛЯ WARP</h2>
+      <p class="hero-desc">одна кнопка — и готовый .conf</p>
+      <div class="action">
+        <button class="action-btn" id="genBtn" type="button">сгенерировать</button>
+      </div>
+    </div>
+
+    <!-- таблица параметров: ключ … значение -->
+    <section class="readout" aria-label="Текущие параметры конфига">
+      <div class="readout-head">
+        <span>параметр</span>
+        <span>значение</span>
+      </div>
+      <div class="row-line">
+        <span class="k">endpoint</span>
+        <span class="v" id="paramEp">—</span>
+      </div>
+      <div class="row-line">
+        <span class="k">dns</span>
+        <span class="v" id="paramDns">—</span>
+      </div>
+      <div class="row-line">
+        <span class="k">mtu</span>
+        <span class="v" id="paramMtu">—</span>
+      </div>
+      <div class="row-line">
+        <span class="k">i1</span>
+        <span class="v" id="paramI1"><small>профиль</small></span>
+      </div>
+    </section>
+
+    <section class="steps" aria-label="Порядок работы">
+      <div class="steps-head">порядок</div>
+      <ol class="steps-list">
+        <li><span class="n">01</span><span class="t">нажать «сгенерировать» — аккаунт создаёт сервер</span></li>
+        <li><span class="n">02</span><span class="t">скопировать .conf или скачать файл</span></li>
+        <li><span class="n">03</span><span class="t">импортировать в AmneziaWG / AmneziaVPN</span></li>
+      </ol>
+    </section>
+
+    <footer class="footer">
+      <p>аккаунт создаётся на сервере · приватный ключ не сохраняется</p>
+    </footer>
+  </main>
+
+  <!-- снизу выезжает результат -->
+  <aside class="sheet" id="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <h2 class="sheet-title" id="sheetTitle">ГОТОВО</h2>
+      <button class="sheet-close" id="sheetClose" type="button" aria-label="Закрыть">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <div class="status-log" id="statusBox"></div>
+
+      <div id="confBlock" class="hidden">
+        <div class="conf-head">
+          <span class="conf-name">warpgen.conf</span>
+          <button class="conf-copy" id="confCopyBtn" type="button" aria-label="Копировать">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+        </div>
+        <pre class="conf-box" id="confOut"></pre>
+        <div class="conf-actions">
+          <button id="confCopy" type="button">копировать</button>
+          <button class="primary" id="confDownload" type="button">скачать .conf</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+  <script src="warpgen.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

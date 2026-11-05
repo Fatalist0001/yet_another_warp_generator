@@ -57,6 +57,8 @@ func Run(args []string) error {
 		return runRun(args[1:])
 	case "tun-revert":
 		return runTunRevert(args[1:])
+	case "web":
+		return runWeb(args[1:])
 	default:
 		return fmt.Errorf("неизвестная команда: %s (используйте help)", command)
 	}
@@ -561,6 +563,7 @@ func printUsage() {
   chain      Запустить warp-plus (WARP → Psiphon) поверх внешнего AWG-туннеля
   run        Поднять туннель внутри процесса и отдать SOCKS5 (без root и TUN)
   tun-revert Откатить маршруты и DNS по файлу состояния после аварии (kill -9)
+  web        Боевой HTTP-сервер веб-генератора конфигов (HTTPS/прокси, лимиты)
   version    Версия утилиты
   help       Показать эту справку
 

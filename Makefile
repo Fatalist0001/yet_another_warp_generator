@@ -1,4 +1,4 @@
-.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean gui-deps gui-test gui-test-live gui-analyze gui-run gui-build gui-appimage android-apk windows
+.PHONY: build build-debug test test-ci test-integration test-e2e vet fmt checks clean web-test web-serve web-prod gui-deps gui-test gui-test-live gui-analyze gui-run gui-build gui-appimage android-apk windows
 
 # GUI на Flutter: SDK берётся из PATH или из локального .toolchain/flutter/bin,
 # кэш пакетов — рядом с локальным SDK (основной диск не занимаем).
@@ -38,6 +38,28 @@ fmt:
 	gofmt -l . | grep -v '^$$' || true
 
 checks: vet fmt test
+
+# Веб-генератор (web/): офлайн-тесты JS-ядра, формы, разметки/стилей и дев-бэкенда.
+# Сеть не нужна: fetch и UDP подменены фейками/loopback-эхом.
+web-test:
+	cd web && node test.js && node test-dom.js && node test-css.js && node test-server.js
+	go test ./webserver ./web -short
+
+# Локальный эталон бэкенда: статика + /api/warp (регистрация WARP) + /api/dns.
+# Печатает адрес; откройте его в браузере. Нужна сеть до Cloudflare.
+web-serve:
+	cd web && node dev-server.js --port $${PORT:-8080} > server.log 2>&1 &
+	@sleep 1 && curl -s -m 3 -o /dev/null -w '  http://127.0.0.1:$${PORT:-8080}/ -> HTTP %{http_code} (ждите 2-3 с, если порт только освободился)\n' http://127.0.0.1:$${PORT:-8080}/api/health || true
+
+# Боевой сервер (Go): HTTPS/прокси, CORS, лимиты, security-заголовки.
+# LISTEN=:8080 WEB_FLAGS="--trust-proxy --hsts --allowed-origins https://example.org" make web-prod
+web-prod: build
+	./warpgen web --listen $${LISTEN:-127.0.0.1:8080} $${WEB_FLAGS:-}
+
+# Остановить сервер, запущенный через make web-serve.
+# [d] — чтобы pkill не совпал с собственной командной строкой.
+web-kill:
+	pkill -f 'node [d]ev-server.js' && echo "dev-server остановлен" || echo "dev-server не запущен"
 
 clean:
 	rm -f warpgen warpgen-debug coverage.out
